@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glean Legal - Sign In</title>
+    <link rel="stylesheet" href="login.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <h1>Glean Redliner</h1>
+            <p class="subtitle">AI-powered contract review for Word</p>
+        </div>
+
+        <div class="login-card">
+            <!-- Cognito login form (shown in cognito mode) -->
+            <div id="cognito-login" style="display: none;">
+            <h2>Sign In</h2>
+            <p class="description">Enter your credentials to access the add-in</p>
+
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input 
+                        type="email" 
+                        id="email" 
+                        name="email" 
+                        placeholder="your.email@company.com"
+                        autocomplete="email"
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        name="password" 
+                        placeholder="Enter your password"
+                        autocomplete="current-password"
+                        required
+                    >
+                </div>
+
+                <div id="error-message" class="error-message" style="display: none;"></div>
+
+                <button type="submit" id="login-button" class="btn-primary">
+                    <span class="button-text">Sign In</span>
+                    <span class="button-spinner" style="display: none;">
+                        <svg class="spinner" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity="0.25"/>
+                            <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/>
+                        </svg>
+                    </span>
+                </button>
+            </form>
+            </div>
+
+            <!-- SSO login (shown in sso mode) -->
+            <div id="sso-login" style="display: none;">
+                <h2>Sign In</h2>
+
+                <div id="sso-error-message" class="error-message" style="display: none;"></div>
+
+                <button type="button" id="sso-login-button" class="btn-primary" onclick="startSSOLogin()" style="width: 100%;">
+                    <span class="button-text">Sign in with Glean</span>
+                    <span class="button-spinner" style="display: none;">
+                        <svg class="spinner" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" opacity="0.25"/>
+                            <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" fill="none" stroke-linecap="round"/>
+                        </svg>
+                    </span>
+                </button>
+            </div>
+
+            <div class="help-text">
+                <p>Need help? Contact your administrator</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Office.js for Word Add-in -->
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    
+    <!-- Glean config (classic scripts, load synchronously before other scripts) -->
+    <script src="../config/glean-defaults.js"></script>
+    <script src="../config/api.js"></script>
+    
+    <!-- AWS SDK and Cognito Identity SDK (loaded always, used only in cognito mode) -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1000.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.7/dist/amazon-cognito-identity.min.js"></script>
+    
+    <!-- Login script handles Office.onReady internally -->
+    <script src="login.js"></script>
+</body>
+</html>

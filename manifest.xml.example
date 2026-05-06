@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+           xsi:type="TaskPaneApp">
+  
+  <!-- Basic Add-in Information -->
+  <Id>8a7f3c2e-5d4b-4e9a-b1c8-6f2d9e4a7b3c</Id>
+  <Version>1.1.0</Version>
+  <ProviderName>Glean Technologies</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Glean AI Redliner"/>
+  <Description DefaultValue="AI-powered contract review and analysis using Glean's intelligent agents. Review contracts with customizable playbooks, get AI recommendations, and chat with your documents."/>
+  <IconUrl DefaultValue="https://{{DOMAIN_NAME}}/assets/GLN_logo-icon-Primary.png"/>
+  <HighResolutionIconUrl DefaultValue="https://{{DOMAIN_NAME}}/assets/GLN_logo-icon-Primary.png"/>
+  <SupportUrl DefaultValue="https://www.glean.com"/>
+  
+  <!-- App Domains - External domains the add-in can access -->
+  <AppDomains>
+    <AppDomain>https://{{GLEAN_INSTANCE}}-be.glean.com</AppDomain>
+    <AppDomain>https://{{API_GATEWAY_ID}}.execute-api.us-east-1.amazonaws.com</AppDomain>
+  </AppDomains>
+  
+  <!-- Hosts -->
+  <Hosts>
+    <Host Name="Document"/>
+  </Hosts>
+  
+  <!-- Default Settings -->
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://{{DOMAIN_NAME}}/taskpane/taskpane.html"/>
+  </DefaultSettings>
+  
+  <!-- Permissions -->
+  <Permissions>ReadWriteDocument</Permissions>
+  
+  <!-- Version Overrides for Ribbon Integration -->
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Document">
+        <DesktopFormFactor>
+          <!-- Extension Point: Ribbon Button -->
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="GleanLegalGroup">
+                <Label resid="GleanLegalGroupLabel"/>
+                <Icon>
+                  <bt:Image size="16" resid="Icon16"/>
+                  <bt:Image size="32" resid="Icon32"/>
+                  <bt:Image size="80" resid="Icon80"/>
+                </Icon>
+                
+                <!-- Task Pane Button -->
+                <Control xsi:type="Button" id="TaskpaneButton">
+                  <Label resid="TaskpaneButtonLabel"/>
+                  <Supertip>
+                    <Title resid="TaskpaneButtonLabel"/>
+                    <Description resid="TaskpaneButtonTooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon16"/>
+                    <bt:Image size="32" resid="Icon32"/>
+                    <bt:Image size="80" resid="Icon80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>ButtonId1</TaskpaneId>
+                    <SourceLocation resid="TaskpaneUrl"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    
+    <!-- Resources -->
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon16" DefaultValue="https://{{DOMAIN_NAME}}/assets/GLN_logo-icon-Primary.png"/>
+        <bt:Image id="Icon32" DefaultValue="https://{{DOMAIN_NAME}}/assets/GLN_logo-icon-Primary.png"/>
+        <bt:Image id="Icon80" DefaultValue="https://{{DOMAIN_NAME}}/assets/GLN_logo-icon-Primary.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="TaskpaneUrl" DefaultValue="https://{{DOMAIN_NAME}}/taskpane/taskpane.html"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="GleanLegalGroupLabel" DefaultValue="Glean Legal"/>
+        <bt:String id="TaskpaneButtonLabel" DefaultValue="Glean AI Redliner"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="TaskpaneButtonTooltip" DefaultValue="Open Glean Legal Contract Review to analyze and review contracts with AI assistance."/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

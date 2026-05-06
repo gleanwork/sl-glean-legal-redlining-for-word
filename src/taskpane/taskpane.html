@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glean AI Redliner</title>
+    
+    <!-- Office.js -->
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    
+    <!-- Glean config (classic scripts, load synchronously before other scripts) -->
+    <script src="../config/glean-defaults.js"></script>
+    <script src="../config/api.js"></script>
+    
+    <!-- Early auth gate — prevents flash of unauthenticated content -->
+    <script>
+    (function() {
+        if (sessionStorage.getItem('just_logged_in') === 'true') return;
+        var mode = (window.GLEAN_DEFAULTS && window.GLEAN_DEFAULTS.authMode) || 'cognito';
+        if (mode === 'sso') {
+            var token = localStorage.getItem('glean_oauth_access_token');
+            var expiry = parseInt(localStorage.getItem('glean_oauth_token_expiry') || '0');
+            if (!token || Date.now() >= expiry) window.location.replace('/taskpane/login.html');
+        } else {
+            var t = localStorage.getItem('glean_auth_token');
+            var e = parseInt(localStorage.getItem('glean_token_expires_at') || '0');
+            if (!t || e <= Date.now() + 300000) window.location.replace('/taskpane/login.html');
+        }
+    })();
+    </script>
+
+    <!-- App Styles -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="task-pane">
+        <div class="header">
+            <div class="header-left" onclick="app.refreshAddIn()" style="cursor: pointer;" title="Go Home">
+                <div class="app-title">Glean AI Redliner</div>
+            </div>
+            <div class="header-icons">
+                <button class="icon-btn" onclick="app.refreshAddIn()" title="Go Home">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                        <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                    </svg>
+                </button>
+                <button class="icon-btn" onclick="app.showScreen('settings')" title="Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="4" y1="21" x2="4" y2="14"></line>
+                        <line x1="4" y1="10" x2="4" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="12"></line>
+                        <line x1="12" y1="8" x2="12" y2="3"></line>
+                        <line x1="20" y1="21" x2="20" y2="16"></line>
+                        <line x1="20" y1="12" x2="20" y2="3"></line>
+                        <line x1="1" y1="14" x2="7" y2="14"></line>
+                        <line x1="9" y1="8" x2="15" y2="8"></line>
+                        <line x1="17" y1="16" x2="23" y2="16"></line>
+                    </svg>
+                </button>
+                <button class="icon-btn logout-btn" onclick="logout()" title="Logout">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <div class="content" id="content"></div>
+    </div>
+    
+    <!-- AWS SDK and Cognito Identity SDK -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1000.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.7/dist/amazon-cognito-identity.min.js"></script>
+    
+    <!-- Markdown Renderer -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- App Scripts -->
+    <script type="module" src="app.js"></script>
+    <script defer src="screens.js"></script>
+    
+    <!-- Authentication Middleware (load last, after Office.js is ready) -->
+    <script defer src="auth.js"></script>
+</body>
+</html>

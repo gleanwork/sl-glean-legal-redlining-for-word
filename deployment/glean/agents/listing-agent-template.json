@@ -1,0 +1,187 @@
+{
+  "rootWorkflow": {
+    "description": "Simply lists the available Templates, Playbooks, or Both - to be used by the Redlining Word Add-In.",
+    "icon": {
+      "backgroundColor": "var(--theme-brand-apple-green-50)",
+      "color": "#333",
+      "iconType": "GLYPH",
+      "name": "feather"
+    },
+    "name": "[Legal] Template & Playbook Lister",
+    "schema": {
+      "steps": [
+        {
+          "id": "e03b2018-6d02-405f-a668-afad32b69c5b",
+          "type": "BRANCH",
+          "branchConfig": {
+            "branches": [
+              {
+                "condition": {
+                  "boolFunction": {
+                    "id": "Think",
+                    "inputTemplate": [
+                      {
+                        "template": "user specified \"Templates\"",
+                        "name": "ExecutionConditionBoolPrompt"
+                      }
+                    ]
+                  }
+                },
+                "stepId": "fbee7813-1fd2-4239-aee2-a5599776d010"
+              },
+              {
+                "condition": {
+                  "boolFunction": {
+                    "id": "Think",
+                    "inputTemplate": [
+                      {
+                        "template": "user specified \"Playbooks\"",
+                        "name": "ExecutionConditionBoolPrompt"
+                      }
+                    ]
+                  }
+                },
+                "stepId": "d333df20-6915-43e3-a601-1ecd4a69d49f"
+              }
+            ],
+            "default": {
+              "stepId": "d533e6fa-b3e2-4db1-bc08-20de25c0de60"
+            }
+          },
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        },
+        {
+          "id": "fbee7813-1fd2-4239-aee2-a5599776d010",
+          "instructionTemplate": "REDACTED_URL",
+          "type": "TOOL",
+          "stepDependencies": [
+            "e03b2018-6d02-405f-a668-afad32b69c5b"
+          ],
+          "toolConfig": [
+            {
+              "id": "Glean Document Reader",
+              "documentReaderConfig": {}
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        },
+        {
+          "id": "d333df20-6915-43e3-a601-1ecd4a69d49f",
+          "instructionTemplate": "REDACTED_URL",
+          "type": "TOOL",
+          "stepDependencies": [
+            "e03b2018-6d02-405f-a668-afad32b69c5b"
+          ],
+          "toolConfig": [
+            {
+              "id": "Glean Document Reader",
+              "documentReaderConfig": {}
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        },
+        {
+          "id": "d533e6fa-b3e2-4db1-bc08-20de25c0de60",
+          "instructionTemplate": "REDACTED_URL",
+          "type": "TOOL",
+          "stepDependencies": [
+            "e03b2018-6d02-405f-a668-afad32b69c5b"
+          ],
+          "toolConfig": [
+            {
+              "id": "Glean Document Reader",
+              "documentReaderConfig": {}
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        },
+        {
+          "id": "774c3fc9-7295-4984-ac80-aac4dcf12ad9",
+          "instructionTemplate": "Responds to the user with a list of each of the documents inside the Contract Templates folder read here [[fbee7813-1fd2-4239-aee2-a5599776d010]] \n\nReturn a JSON object with a \"templates\" array. Each item should have \"name\" (the document title) and \"url\" (the Google Drive URL). Return only valid JSON with no additional text. Here's an example:\n\n{\n \"templates\": [\n {\n \"name\": \"Vendor Services Agreement Template\",\n \"url\": \"REDACTED_URL\n },\n {\n \"name\": \"Non-Disclosure Agreement (NDA) Template\",\n \"url\": \"REDACTED_URL\n },\n {\n \"name\": \"SaaS Subscription Agreement Template\",\n \"url\": \"REDACTED_URL\n }\n ]\n}",
+          "type": "TOOL",
+          "stepDependencies": [
+            "fbee7813-1fd2-4239-aee2-a5599776d010"
+          ],
+          "toolConfig": [
+            {
+              "id": "Respond",
+              "respondConfig": {
+                "temperature": "FACTUAL"
+              }
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        },
+        {
+          "id": "73fc17bd-21be-4871-b46b-c8aafcd9d915",
+          "instructionTemplate": "Responds to the user with a list of each of the documents inside the Contract Templates folder read here [[d333df20-6915-43e3-a601-1ecd4a69d49f]] \n\nReturn a JSON object with a \"playbooks\" array. Each item should have \"name\" (the document title) and \"url\" (the Google Drive URL). Return only valid JSON with no additional text. Here's an example:\n\n{\n \"playbooks\": [\n {\n \"name\": \"Vendor Services Agreement Playbook\",\n \"url\": \"REDACTED_URL\n },\n {\n \"name\": \"NDA Review Playbook\",\n \"url\": \"REDACTED_URL\n },\n {\n \"name\": \"SaaS Subscription Review Playbook\",\n \"url\": \"REDACTED_URL\n }\n ]\n}",
+          "type": "TOOL",
+          "stepDependencies": [
+            "d333df20-6915-43e3-a601-1ecd4a69d49f"
+          ],
+          "toolConfig": [
+            {
+              "id": "Respond",
+              "respondConfig": {
+                "temperature": "FACTUAL"
+              }
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        },
+        {
+          "id": "7a21e0f9-2b3f-49bd-9894-9985d25da00d",
+          "instructionTemplate": "REDACTED_URL",
+          "type": "TOOL",
+          "stepDependencies": [
+            "d533e6fa-b3e2-4db1-bc08-20de25c0de60"
+          ],
+          "toolConfig": [
+            {
+              "id": "Glean Document Reader",
+              "documentReaderConfig": {}
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        },
+        {
+          "id": "139830a2-b813-48a7-93a0-5685d88c1560",
+          "instructionTemplate": "Responds to the user with a list of each of the documents inside the Contract Templates folder (read here [[d533e6fa-b3e2-4db1-bc08-20de25c0de60]]) and Redlining Playbooks folder (read here [[7a21e0f9-2b3f-49bd-9894-9985d25da00d]])\n\nReturn a JSON object with a \"templates\" and \"playbooks\" array. Each item should have \"name\" (the document title) and \"url\" (the Google Drive URL). Return only valid JSON with no additional text. Here's an example:\n\n{\n \"templates\": [\n {\n \"name\": \"Vendor Services Agreement Template\",\n \"url\": \"REDACTED_URL\n },\n {\n \"name\": \"Non-Disclosure Agreement (NDA) Template\",\n \"url\": \"REDACTED_URL\n }\n ],\n \"playbooks\": [\n {\n \"name\": \"Vendor Services Agreement Playbook\",\n \"url\": \"REDACTED_URL\n },\n {\n \"name\": \"NDA Review Playbook\",\n \"url\": \"REDACTED_URL\n }\n ]\n}",
+          "type": "TOOL",
+          "stepDependencies": [
+            "7a21e0f9-2b3f-49bd-9894-9985d25da00d"
+          ],
+          "toolConfig": [
+            {
+              "id": "Respond",
+              "respondConfig": {
+                "temperature": "FACTUAL"
+              }
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        }
+      ],
+      "modelOptions": {},
+      "trigger": {
+        "type": "CHAT_MESSAGE",
+        "config": {
+          "chatMessage": {
+            "slackConfig": {
+              "sharingSettings": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "serverVersion": "branch:\"release-2026-01-13\" commit_hash:\"4329141c7140007aca512b1301fa6c23d3474282\" full:\"489.152\""
+}

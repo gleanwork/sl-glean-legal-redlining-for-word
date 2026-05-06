@@ -1,0 +1,392 @@
+// Cognito Configuration - These will be injected during deployment
+const COGNITO_CONFIG = {
+    region: 'us-east-1',
+    userPoolId: '{{USER_POOL_ID}}',
+    clientId: '{{CLIENT_ID}}'
+};
+
+// Auth mode detection
+var currentAuthMode = 'cognito'; // Default until GLEAN_DEFAULTS loads
+
+function detectAuthMode() {
+    if (window.GLEAN_DEFAULTS && window.GLEAN_DEFAULTS.authMode) {
+        currentAuthMode = window.GLEAN_DEFAULTS.authMode;
+    }
+    console.log('Login page: Auth mode =', currentAuthMode);
+    showAuthUI();
+}
+
+function showAuthUI() {
+    var cognitoSection = document.getElementById('cognito-login');
+    var ssoSection = document.getElementById('sso-login');
+    
+    if (currentAuthMode === 'sso') {
+        if (cognitoSection) cognitoSection.style.display = 'none';
+        if (ssoSection) ssoSection.style.display = 'block';
+    } else {
+        if (cognitoSection) cognitoSection.style.display = 'block';
+        if (ssoSection) ssoSection.style.display = 'none';
+        // Initialize AWS SDK only in cognito mode
+        if (typeof AWS !== 'undefined') {
+            AWS.config.region = COGNITO_CONFIG.region;
+        }
+    }
+}
+
+// Listen for GLEAN_DEFAULTS to be loaded (from module bridge)
+window.addEventListener('glean-defaults-ready', function() {
+    detectAuthMode();
+    checkIfAlreadyAuthenticated();
+});
+
+// Check if already authenticated after Office.js is ready
+if (typeof Office !== 'undefined') {
+    Office.onReady(function() {
+        console.log('Login page: Office.js ready');
+        // If defaults already loaded, check auth; otherwise wait for event
+        if (window.GLEAN_DEFAULTS) {
+            detectAuthMode();
+            checkIfAlreadyAuthenticated();
+        }
+    });
+} else {
+    // Fallback for testing outside Office
+    window.addEventListener('DOMContentLoaded', function() {
+        if (window.GLEAN_DEFAULTS) {
+            detectAuthMode();
+        }
+        checkIfAlreadyAuthenticated();
+    });
+}
+
+function checkIfAlreadyAuthenticated() {
+    if (currentAuthMode === 'sso') {
+        // SSO mode: check for OAuth token
+        var oauthToken = localStorage.getItem('glean_oauth_access_token');
+        var oauthExpiry = parseInt(localStorage.getItem('glean_oauth_token_expiry') || '0');
+        if (oauthToken && Date.now() < oauthExpiry) {
+            console.log('Login page: SSO token valid, redirecting to taskpane');
+            sessionStorage.setItem('just_logged_in', 'true');
+            window.location.replace('/taskpane/taskpane.html');
+            return;
+        }
+        console.log('Login page: SSO mode, not authenticated');
+    } else {
+        // Cognito mode: check for Cognito token
+        var token = getAuthToken();
+        if (token && isTokenValid(token)) {
+            console.log('Login page: Already authenticated, redirecting to taskpane');
+            sessionStorage.setItem('just_logged_in', 'true');
+            window.location.replace('/taskpane/taskpane.html');
+            return;
+        }
+        console.log('Login page: Not authenticated, showing login form');
+    }
+}
+
+// Setup form submission handler when DOM is ready
+function setupLoginForm() {
+    const loginForm = document.getElementById('login-form');
+    if (!loginForm) {
+        console.error('Login form not found');
+        return;
+    }
+    
+    loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const email = document.getElementById('email').value.trim();
+        const password = document.getElementById('password').value;
+        const errorMessage = document.getElementById('error-message');
+        const loginButton = document.getElementById('login-button');
+        const buttonText = loginButton.querySelector('.button-text');
+        const buttonSpinner = loginButton.querySelector('.button-spinner');
+        
+        // Hide previous errors
+        errorMessage.style.display = 'none';
+        
+        // Show loading state
+        loginButton.disabled = true;
+        buttonText.style.display = 'none';
+        buttonSpinner.style.display = 'inline-block';
+        
+        try {
+            console.log('Login page: Attempting authentication');
+            // Authenticate with Cognito
+            const authResult = await authenticateUser(email, password);
+            
+            // Store tokens
+            storeAuthTokens(authResult);
+            
+            console.log('Login page: Authentication successful, redirecting');
+            // Set flag to prevent redirect loop
+            sessionStorage.setItem('just_logged_in', 'true');
+            // Redirect to main app
+            window.location.replace('/taskpane/taskpane.html');
+        
+    } catch (error) {
+        console.error('Login error:', error);
+        
+        // Show error message
+        errorMessage.textContent = getErrorMessage(error);
+        errorMessage.style.display = 'flex';
+        
+        // Reset button state
+        loginButton.disabled = false;
+        buttonText.style.display = 'inline';
+        buttonSpinner.style.display = 'none';
+    }
+    });
+}
+
+// Call setupLoginForm when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupLoginForm);
+} else {
+    setupLoginForm();
+}
+
+/**
+ * Authenticate user with Cognito using USER_PASSWORD_AUTH
+ */
+async function authenticateUser(email, password) {
+    const cognitoIdentityServiceProvider = new AWS.CognitoIdentityServiceProvider({
+        region: COGNITO_CONFIG.region
+    });
+    
+    const params = {
+        AuthFlow: 'USER_PASSWORD_AUTH',
+        ClientId: COGNITO_CONFIG.clientId,
+        AuthParameters: {
+            USERNAME: email,
+            PASSWORD: password
+        }
+    };
+    
+    try {
+        const response = await cognitoIdentityServiceProvider.initiateAuth(params).promise();
+        
+        if (response.ChallengeName === 'NEW_PASSWORD_REQUIRED') {
+            throw new Error('Password change required. Please contact your administrator.');
+        }
+        
+        // Decode the ID token to get expiration
+        const idTokenPayload = JSON.parse(atob(response.AuthenticationResult.IdToken.split('.')[1]));
+        
+        return {
+            idToken: response.AuthenticationResult.IdToken,
+            accessToken: response.AuthenticationResult.AccessToken,
+            refreshToken: response.AuthenticationResult.RefreshToken,
+            expiresAt: idTokenPayload.exp * 1000
+        };
+    } catch (error) {
+        throw error;
+    }
+}
+
+/**
+ * Store authentication tokens in localStorage and cookies
+ */
+function storeAuthTokens(authResult) {
+    // Store in localStorage for client-side access
+    localStorage.setItem('glean_auth_token', authResult.idToken);
+    localStorage.setItem('glean_access_token', authResult.accessToken);
+    localStorage.setItem('glean_refresh_token', authResult.refreshToken);
+    localStorage.setItem('glean_token_expires_at', authResult.expiresAt.toString());
+    
+    // Also store in cookie for Lambda@Edge validation
+    // Use SameSite=None for iframe compatibility (Word Online)
+    const expiryDate = new Date(authResult.expiresAt);
+    document.cookie = `glean_auth_token=${authResult.idToken}; path=/; expires=${expiryDate.toUTCString()}; secure; samesite=none`;
+}
+
+/**
+ * Get stored authentication token
+ */
+function getAuthToken() {
+    return localStorage.getItem('glean_auth_token');
+}
+
+/**
+ * Check if token is still valid
+ */
+function isTokenValid(token) {
+    if (!token) return false;
+    
+    const expiresAt = parseInt(localStorage.getItem('glean_token_expires_at') || '0');
+    const now = Date.now();
+    
+    // Token is valid if it expires more than 5 minutes from now
+    return expiresAt > (now + 5 * 60 * 1000);
+}
+
+/**
+ * Get user-friendly error message
+ */
+function getErrorMessage(error) {
+    const errorCode = error.code || error.name;
+    
+    switch (errorCode) {
+        case 'UserNotFoundException':
+        case 'NotAuthorizedException':
+            return 'Invalid email or password. Please try again.';
+        case 'UserNotConfirmedException':
+            return 'Your account is not confirmed. Please contact your administrator.';
+        case 'PasswordResetRequiredException':
+            return 'Password reset required. Please contact your administrator.';
+        case 'TooManyRequestsException':
+            return 'Too many login attempts. Please try again later.';
+        case 'NetworkError':
+            return 'Network error. Please check your connection and try again.';
+        default:
+            return error.message || 'An error occurred during login. Please try again.';
+    }
+}
+
+/**
+ * SSO Login via Office Dialog API
+ */
+window.startSSOLogin = function() {
+    var ssoButton = document.getElementById('sso-login-button');
+    var buttonText = ssoButton.querySelector('.button-text');
+    var buttonSpinner = ssoButton.querySelector('.button-spinner');
+    var errorMessage = document.getElementById('sso-error-message');
+    
+    // Show loading state
+    ssoButton.disabled = true;
+    buttonText.style.display = 'none';
+    buttonSpinner.style.display = 'inline-block';
+    if (errorMessage) errorMessage.style.display = 'none';
+    
+    var dialogUrl = window.location.origin + '/taskpane/oauth-dialog.html';
+    
+    // Try Office Dialog API first
+    if (typeof Office !== 'undefined' && Office.context && Office.context.ui) {
+        Office.context.ui.displayDialogAsync(
+            dialogUrl,
+            { height: 60, width: 40, promptBeforeOpen: false },
+            function(asyncResult) {
+                if (asyncResult.status === Office.AsyncResultStatus.Failed) {
+                    console.error('Login page: Dialog failed:', asyncResult.error.message);
+                    showSSOError('Could not open sign-in window. ' + asyncResult.error.message);
+                    resetSSOButton();
+                    return;
+                }
+                
+                var dialog = asyncResult.value;
+                
+                dialog.addEventHandler(Office.EventType.DialogMessageReceived, function(arg) {
+                    dialog.close();
+                    
+                    try {
+                        var message = JSON.parse(arg.message);
+                        
+                        if (message.type === 'oauth-success') {
+                            console.log('Login page: SSO login successful');
+                            if (message.tokens) {
+                                console.log('Login page: Storing OAuth tokens in iframe localStorage');
+                                localStorage.setItem('glean_oauth_access_token', message.tokens.access_token);
+                                localStorage.setItem('glean_oauth_refresh_token', message.tokens.refresh_token || '');
+                                localStorage.setItem('glean_oauth_id_token', message.tokens.id_token || '');
+                                localStorage.setItem('glean_oauth_token_expiry', (Date.now() + (message.tokens.expires_in || 3600) * 1000).toString());
+                                console.log('Login page: Tokens stored, token length:', message.tokens.access_token?.length);
+                            } else {
+                                console.warn('Login page: No tokens in oauth-success message');
+                            }
+                            sessionStorage.setItem('just_logged_in', 'true');
+                            window.location.replace('/taskpane/taskpane.html');
+                        } else if (message.type === 'oauth-error') {
+                            showSSOError(message.error || 'Sign-in failed');
+                            resetSSOButton();
+                        }
+                    } catch (e) {
+                        console.error('Login page: Error parsing dialog message:', e);
+                        showSSOError('An unexpected error occurred');
+                        resetSSOButton();
+                    }
+                });
+                
+                dialog.addEventHandler(Office.EventType.DialogEventReceived, function(arg) {
+                    // Dialog was closed by user
+                    console.log('Login page: Dialog closed, event:', arg.error);
+                    resetSSOButton();
+                });
+            }
+        );
+    } else {
+        // Fallback: open in a popup window (for testing outside Office)
+        var popup = window.open(dialogUrl, 'glean-sso', 'width=500,height=600');
+        
+        // Listen for message from popup
+        window.addEventListener('message', function onMessage(event) {
+            if (event.origin !== window.location.origin) return;
+            
+            try {
+                var message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                if (message.type === 'oauth-success') {
+                    window.removeEventListener('message', onMessage);
+                    if (message.tokens) {
+                        console.log('Login page: Storing OAuth tokens (popup fallback)');
+                        localStorage.setItem('glean_oauth_access_token', message.tokens.access_token);
+                        localStorage.setItem('glean_oauth_refresh_token', message.tokens.refresh_token || '');
+                        localStorage.setItem('glean_oauth_id_token', message.tokens.id_token || '');
+                        localStorage.setItem('glean_oauth_token_expiry', (Date.now() + (message.tokens.expires_in || 3600) * 1000).toString());
+                    }
+                    sessionStorage.setItem('just_logged_in', 'true');
+                    window.location.replace('/taskpane/taskpane.html');
+                } else if (message.type === 'oauth-error') {
+                    window.removeEventListener('message', onMessage);
+                    showSSOError(message.error || 'Sign-in failed');
+                    resetSSOButton();
+                }
+            } catch (e) { /* ignore non-JSON messages */ }
+        });
+        
+        // Check if popup was blocked
+        if (!popup) {
+            showSSOError('Pop-up blocked. Please allow pop-ups and try again.');
+            resetSSOButton();
+        }
+    }
+};
+
+function showSSOError(message) {
+    var errorEl = document.getElementById('sso-error-message');
+    if (errorEl) {
+        errorEl.textContent = message;
+        errorEl.style.display = 'flex';
+    }
+}
+
+function resetSSOButton() {
+    var ssoButton = document.getElementById('sso-login-button');
+    if (ssoButton) {
+        ssoButton.disabled = false;
+        var buttonText = ssoButton.querySelector('.button-text');
+        var buttonSpinner = ssoButton.querySelector('.button-spinner');
+        if (buttonText) buttonText.style.display = 'inline';
+        if (buttonSpinner) buttonSpinner.style.display = 'none';
+    }
+}
+
+/**
+ * Logout function (can be called from main app)
+ */
+window.gleanLogout = function() {
+    // Clear Cognito tokens
+    localStorage.removeItem('glean_auth_token');
+    localStorage.removeItem('glean_access_token');
+    localStorage.removeItem('glean_refresh_token');
+    localStorage.removeItem('glean_token_expires_at');
+    
+    // Clear OAuth tokens
+    localStorage.removeItem('glean_oauth_access_token');
+    localStorage.removeItem('glean_oauth_refresh_token');
+    localStorage.removeItem('glean_oauth_token_expiry');
+    localStorage.removeItem('glean_oauth_id_token');
+    
+    // Clear auth cookie
+    document.cookie = 'glean_auth_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; secure; samesite=none';
+    
+    window.location.href = '/taskpane/login.html';
+};

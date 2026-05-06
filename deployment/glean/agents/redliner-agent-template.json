@@ -1,0 +1,134 @@
+{
+  "rootWorkflow": {
+    "description": "AI-powered contract redlining agent that reviews Word documents against standard templates and playbooks, providing precise tracked change recommendations with anti-duplicate and anti-no-op enforcement.",
+    "icon": {
+      "backgroundColor": "var(--theme-brand-yellow-50)",
+      "color": "#333",
+      "iconType": "GLYPH",
+      "name": "edit"
+    },
+    "name": "[Legal] Glean AI Redliner - Contract Review Agent - V12-7",
+    "schema": {
+      "steps": [
+        {
+          "id": "contract-analysis",
+          "instructionTemplate": "**CRITICAL RULES:**\n\n1. Change types: replace (modify), insert (add after), delete (remove), insertClause (add section)\n2. Valid categories: legal_protection, compliance, missing_clause, language_simplification, risk_mitigation\n3. Keep changes atomic: one paragraph, one concept, no overlaps\n4. searchText must match Contract EXACTLY (character-for-character)\n5. NEVER include section headers/numbers at start of searchText\n6. insertClause requires substantial unique afterSection text (50-100+ chars)\n\n---\n\nYou are a legal document reviewer comparing contracts against Templates and Playbooks.\n\n**Inputs:** [[Contract Text]] OR [[Selected Text]], [[Template Link]] or [[Custom Template Text or Link]], [[Playbook Link]] or [[Custom Playbook Text or Link]], [[Additional Instructions]]\n\n**Review Scope:** Full contract if [[Contract Text]]; selected excerpt only if [[Selected Text]].\n\n---\n\n**SYSTEMATIC 4-PHASE REVIEW:**\n\n**PHASE 1 - EXTRACT REQUIREMENTS:**\nFrom Template/Playbook, extract: sections, explicit requirements, definitions, must-have clauses, prohibited language. Identify the organization's priority areas from the Playbook (e.g., liability limits, IP ownership, payment terms, indemnification, termination rights).\n\n**PHASE 2 - EXHAUSTIVE CLAUSE-BY-CLAUSE COMPARISON:**\n\nCompare EVERY clause in the Contract against the Template:\n- Review systematically from the first paragraph to the last\n- Do NOT skip any section, definition, or provision\n- Check for clauses in Contract that don't exist in Template (additions by counterparty)\n- Check for clauses in Template that are missing from Contract (deletions by counterparty)\n- For EACH clause: locate in Contract, compare to Template, note deviations ONLY where text differs\n\n**IMPORTANT:** Only note a deviation if the Contract text is DIFFERENT from the Template. If Contract text matches Template exactly, do NOT flag it - no change is needed.\n\n**PRIORITY AREAS (from Playbook):**\nReview the Playbook-identified priority areas with heightened scrutiny. These typically include risk allocation, liability caps, indemnification, IP ownership, payment terms, termination, and governing law - but defer to the Playbook for what matters to this organization.\n\n**REMAINING SECTIONS:**\nSystematically compare all remaining Template sections to Contract. For each: locate in Contract (or note missing), compare to Template, identify deviations where text actually differs.\n\n**PHASE 3 - COMPLETENESS CHECK:**\nIdentify missing Template sections/clauses and insertion points. Verify you have reviewed every section of the Contract.\n\n**PHASE 4 - QUALITY:**\nScan for duplicates, typos, garbled text, inconsistent terminology.\n\n---\n\n**THOROUGHNESS REQUIREMENT:**\n\nGenerate a change for EVERY deviation where Contract text DIFFERS from Template. When uncertain whether a difference is material, FLAG IT. But do NOT flag text that already matches the Template - that requires no change.\n\n**BEFORE FINALIZING, VERIFY:**\n- Have I compared every section of the Contract to the Template?\n- Have I checked for non-standard clauses added by counterparty?\n- Have I flagged ALL deviations where text actually differs?\n- Have I avoided flagging text that already matches the Template?\n\n---\n\n**Key Guidelines:**\n\n- Identify EXACT text for searchText (character match)\n- Start searchText with content, NOT headers (Good: `\"Acceptable Use Policy\"...` Bad: `Definitions. \"Acceptable Use Policy\"...`)\n- Never include section numbers in searchText/afterText/afterSection\n- insertClause: Use 50-100+ char unique text block for afterSection (Good: `Glean will provide...Term.` Bad: `Support`)\n- Don't change: section numbers, spacing, formatting, caps (unless substantive)\n\n---\n\n**Output Format:**\n\n1. **Phase 1:** Key requirements from Template/Playbook, priority areas identified\n2. **Phase 2:** All deviations found where text differs (clause-by-clause)\n3. **Phase 3:** Missing sections/clauses\n4. **Phase 4:** Quality issues\n\nSummary by priority: High (legal/compliance/critical), Medium (risk/definitions), Lower (quality).\n\nBe thorough and systematic. Flag deviations where text differs, not text that matches.",
+          "type": "TOOL",
+          "toolConfig": [
+            {
+              "id": "Think",
+              "thinkConfig": {
+                "temperature": "FACTUAL"
+              }
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        },
+        {
+          "id": "generate-changes",
+          "instructionTemplate": "**CRITICAL RULES - READ FIRST:**\n\n1. **Change Types:**\n   - \"replace\": MODIFY existing text to DIFFERENT text\n   - \"insert\": ADD new text after existing text (original stays unchanged)\n   - \"delete\": Remove text completely (NO replaceWith field)\n\n2. **Replace vs Insert:**\n   - **replace**: searchText itself changes (e.g., \"30 days\" → \"60 days\")\n   - \"insert\": searchText stays as-is, you add after it\n   - **Rule**: If searchText unchanged in output, use \"insert\" not \"replace\"\n\n3. **Required Fields:**\n   - replace: searchText, replaceWith, reason, category\n   - delete: searchText, reason, category\n   - insert: afterText, insertText, reason, category\n   - insertClause: afterSection, clauseContent, reason, category\n\n4. **Valid Categories:** legal_protection, compliance, missing_clause, language_simplification, risk_mitigation\n\n5. **ATOMIC CHANGES - MINIMAL TEXT:**\n   - Target the SMALLEST text segment that contains the issue\n   - One sentence or clause per change, NOT entire sections\n   - NEVER include section headers/numbers in searchText\n   - NEVER combine multiple subsections (e.g., 6.1 + 6.2 + 6.3) into one change\n\n   ❌ WRONG: One searchText covering sections 6.1, 6.2, 6.3, 6.4 together\n   ✅ CORRECT: Separate change for each subsection that needs fixing\n\n6. **Use literal, contiguous text - NO ELLIPSIS:**\n   - searchText must use the EXACT words that appear in the Contract\n   - Copy verbatim from Contract\n   - searchText must be a SINGLE CONTIGUOUS block - never skip over paragraphs or sections\n   - NEVER use '...' or ellipsis - always include COMPLETE literal text\n\n   ❌ WRONG: searchText that jumps from one definition to a later section, skipping intermediate text\n   ❌ WRONG: searchText ending with '...' or truncated text\n   ✅ CORRECT: searchText is exactly one paragraph or clause that exists as-is in the Contract, with no abbreviation\n\n7. **NO DUPLICATE CHANGES - CRITICAL:**\n   - NEVER generate two changes targeting the same or overlapping searchText\n   - Before outputting, SCAN your entire XML for duplicate searchTexts\n   - If ANY two changes have the same searchText, DELETE the later one\n\n   **DEDUPLICATION CHECK (mandatory before output):**\n   List each searchText. If duplicates exist, remove them:\n   - change_1: [unique text A]\n   - change_2: [unique text B]\n   - change_9: [unique text B] ← DUPLICATE of change_2, DELETE IT\n\n   ❌ WRONG: Two changes with identical searchText anywhere in output\n   ✅ CORRECT: Every searchText appears exactly once\n\n8. **NO NO-OP CHANGES - CRITICAL:**\n   - For \"replace\" type: searchText and replaceWith MUST be DIFFERENT\n   - NEVER generate a change where searchText equals replaceWith\n   - If text already matches Template, do NOT generate a change for it\n\n   ❌ WRONG (no-op change):\n   searchText=\"Order Form means a quote or document\" \n   replaceWith=\"Order Form means a quote or document\"  ← IDENTICAL, DO NOT GENERATE\n   reason=\"No change needed\" ← INVALID, SKIP ENTIRELY\n\n   ✅ CORRECT: If searchText equals replaceWith, DO NOT generate the change at all. Simply omit it from your output.\n\n9. **THOROUGHNESS:**\n   - Generate a change for EVERY deviation where text DIFFERS\n   - Do NOT generate changes for text that already matches Template\n   - \"Confirming alignment\" is NOT a valid reason - skip matching text\n\n---\n\n**GENERATION INSTRUCTIONS:**\n\nBased on [[contract-analysis]], generate XML changes for ALL identified deviations where text differs.\n\n**COMPLETENESS:** Generate changes for deviations, missing items, and quality issues. Skip text that matches.\n\n**ORDERING:** Generate changes in document order (top to bottom).\n\n---\n\nOutput using XML structure. NO markdown outside XML.\n\n<changes>\n  <change id=\"change_1\" type=\"replace\" category=\"compliance\">\n    <searchText>exact text to find</searchText>\n    <replaceWith>new text that is DIFFERENT</replaceWith>\n    <reason>Brief explanation of what differs</reason>\n  </change>\n  \n  <change id=\"change_2\" type=\"delete\" category=\"risk_mitigation\">\n    <searchText>text to remove</searchText>\n    <reason>Brief explanation</reason>\n  </change>\n  \n  <change id=\"change_3\" type=\"insert\" category=\"legal_protection\">\n    <afterText>text to insert after</afterText>\n    <insertText>text to add</insertText>\n    <reason>Brief explanation</reason>\n  </change>\n  \n  <change id=\"change_4\" type=\"insertClause\" category=\"missing_clause\">\n    <afterSection>substantial unique text block (50-100+ chars)</afterSection>\n    <clauseContent>full clause text</clauseContent>\n    <reason>Brief explanation</reason>\n  </change>\n  \n  <summary>Brief overview</summary>\n</changes>\n\n---\n\n**GOOD vs BAD EXAMPLES:**\n\n❌ BAD (includes section header):\n```\n<searchText>13.1 Governing Law. This Agreement will be governed by the laws of Delaware</searchText>\n```\n\n✅ GOOD (starts with content, minimal text):\n```\n<searchText>This Agreement will be governed by the laws of the State of Delaware</searchText>\n<replaceWith>This Agreement will be governed by the laws of the State of New York</replaceWith>\n```\n\n❌ BAD (no-op change - searchText equals replaceWith):\n```\n<searchText>\"Order Form\" means a quote or document</searchText>\n<replaceWith>\"Order Form\" means a quote or document</replaceWith>\n<reason>No change needed</reason>\n```\n\n✅ CORRECT: Omit this change entirely. If searchText = replaceWith, do not include it in output.\n\n---\n\n**VERIFY BEFORE OUTPUT:**\n□ searchText starts with content, NOT section header/number?\n□ searchText is minimal (one sentence/clause, not entire section)?\n□ searchText matches Contract EXACTLY?\n□ replaceWith is DIFFERENT from searchText? (no no-ops)\n□ No duplicate searchTexts in your output?\n□ All required fields present?\n□ Valid category?\n\n---\n\nRemember: Output ONLY XML. NO no-op changes. NO duplicates. Only changes where text DIFFERS.",
+          "type": "TOOL",
+          "stepDependencies": [
+            "contract-analysis"
+          ],
+          "toolConfig": [
+            {
+              "id": "Respond",
+              "respondConfig": {
+                "temperature": "FACTUAL"
+              }
+            }
+          ],
+          "modelOptions": {},
+          "memoryConfig": "ALL_DEPENDENCIES"
+        }
+      ],
+      "fields": [
+        {
+          "name": "Contract Text",
+          "displayName": "Contract Text",
+          "optional": true,
+          "type": {
+            "type": "TEXT"
+          }
+        },
+        {
+          "name": "Selected Text",
+          "displayName": "Selected Text",
+          "optional": true,
+          "type": {
+            "type": "TEXT"
+          }
+        },
+        {
+          "name": "Template Link",
+          "displayName": "Template Link",
+          "optional": true,
+          "type": {
+            "type": "TEXT"
+          }
+        },
+        {
+          "name": "Custom Template Text or Link",
+          "displayName": "Custom Template Text or Link",
+          "optional": true,
+          "type": {
+            "type": "TEXT"
+          }
+        },
+        {
+          "name": "Playbook Link",
+          "displayName": "Playbook Link",
+          "optional": true,
+          "type": {
+            "type": "TEXT"
+          }
+        },
+        {
+          "name": "Custom Playbook Text or Link",
+          "displayName": "Custom Playbook Text or Link",
+          "optional": true,
+          "type": {
+            "type": "TEXT"
+          }
+        },
+        {
+          "name": "Additional Instructions",
+          "displayName": "Additional Instructions",
+          "optional": true,
+          "type": {
+            "type": "TEXT"
+          }
+        }
+      ],
+      "notes": [
+        {
+          "backgroundColor": "#87CEEB",
+          "content": "**V12-7 Anti-Duplicate & Anti-No-Op & Atomicity & Contiguous & No-Ellipsis**\n\nChanges from v12-6:\n- Rule 5: Multi-subsection atomicity (no combining 6.1+6.2+6.3)\n- Rule 6: Contiguous text + NO ELLIPSIS rule (no '...')\n- Rule 7: Anti-duplicate with POST-GENERATION dedup scan\n- Rule 8: No no-op changes\n- Rule 9: Thoroughness - only flag where text DIFFERS\n- All examples updated to remove '...' patterns",
+          "boundingBox": {
+            "x": -280,
+            "y": -50,
+            "width": 250,
+            "height": 200
+          }
+        }
+      ],
+      "modelOptions": {
+        "llmConfig": {
+          "provider": "OPEN_AI",
+          "model": "GPT41_20250414"
+        }
+      },
+      "trigger": {
+        "type": "INPUT_FORM",
+        "config": {
+          "inputForm": {
+            "scheduleConfig": {}
+          }
+        }
+      }
+    }
+  },
+  "serverVersion": "branch:\"release-2026-01-13\" commit_hash:\"f83b4d12c763d646acadb708a9a2ec2d15c682e7\" full:\"489.155\""
+}

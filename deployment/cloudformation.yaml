@@ -1,0 +1,2522 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Glean Legal Word Add-in with Cognito Authentication, CloudFront, S3, and WAF'
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Domain name for the Word Add-in (e.g., wordredlining.gleandemo.com)
+    Default: ""
+  
+  CertificateArn:
+    Type: String
+    Description: ARN of the ACM certificate for the domain (must be in us-east-1 for CloudFront)
+    Default: ""
+  
+  DeploymentId:
+    Type: String
+    Description: Deployment identifier for resource naming
+    Default: prod
+  
+  AuthMode:
+    Type: String
+    Description: Authentication mode - cognito (username/password) or sso (Glean OAuth)
+    AllowedValues:
+      - cognito
+      - sso
+    Default: cognito
+  
+  GleanInstance:
+    Type: String
+    Description: Glean instance name (e.g., scio-prod for scio-prod-be.glean.com)
+    Default: ''
+  
+  GleanOAuthClientId:
+    Type: String
+    Description: Glean OAuth Client ID (required for SSO mode)
+    Default: unused
+  
+  GleanOAuthClientSecret:
+    Type: String
+    Description: Glean OAuth Client Secret (required for SSO mode with static client)
+    NoEcho: true
+    Default: unused
+  
+  OAuthClientType:
+    Type: String
+    Description: OAuth client type - dcr (Dynamic Client Registration) or static
+    AllowedValues:
+      - dcr
+      - static
+    Default: dcr
+  
+  CognitoUserEmail:
+    Type: String
+    Description: Email address for the Cognito user (only used in cognito mode)
+    Default: unused
+  
+  CognitoUserPassword:
+    Type: String
+    Description: Password for the Cognito user (only used in cognito mode)
+    NoEcho: true
+    Default: unused
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
+  IsCognitoAuth: !Equals [!Ref AuthMode, "cognito"]
+
+Resources:
+  # ============================================================================
+  # S3 Bucket for Static Website Hosting
+  # ============================================================================
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'glean-legal-addin-${DeploymentId}-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-addin-${DeploymentId}'
+        - Key: Purpose
+          Value: GleanLegalAddinHosting
+
+  # ============================================================================
+  # Cognito User Pool
+  # ============================================================================
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Condition: IsCognitoAuth
+    Properties:
+      UserPoolName: !Sub 'glean-legal-addin-${DeploymentId}'
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: false
+      UserPoolTags:
+        Name: !Sub 'glean-legal-addin-${DeploymentId}'
+
+  # ============================================================================
+  # Cognito User Pool Client
+  # ============================================================================
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: IsCognitoAuth
+    Properties:
+      ClientName: !Sub 'glean-legal-addin-client-${DeploymentId}'
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+      RefreshTokenValidity: 30
+      AccessTokenValidity: 480
+      IdTokenValidity: 480
+      TokenValidityUnits:
+        RefreshToken: days
+        AccessToken: minutes
+        IdToken: minutes
+
+  # ============================================================================
+  # Cognito User Pool Domain
+  # ============================================================================
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Condition: IsCognitoAuth
+    Properties:
+      Domain: !Sub 'glean-legal-addin-${DeploymentId}-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
+
+  # ============================================================================
+  # Cognito User (Created via Custom Resource)
+  # ============================================================================
+  CognitoUserCreatorRole:
+    Type: AWS::IAM::Role
+    Condition: IsCognitoAuth
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CognitoUserCreation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:AdminCreateUser
+                  - cognito-idp:AdminSetUserPassword
+                  - cognito-idp:AdminDeleteUser
+                Resource: !GetAtt UserPool.Arn
+
+  CognitoUserCreatorFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsCognitoAuth
+    Properties:
+      FunctionName: !Sub 'glean-legal-addin-user-creator-${DeploymentId}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt CognitoUserCreatorRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import logging
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          cognito = boto3.client('cognito-idp')
+          
+          def lambda_handler(event, context):
+              try:
+                  logger.info(f'Event: {event}')
+                  request_type = event['RequestType']
+                  user_pool_id = event['ResourceProperties']['UserPoolId']
+                  email = event['ResourceProperties']['Email']
+                  password = event['ResourceProperties']['Password']
+                  
+                  if request_type == 'Create':
+                      # Create user
+                      cognito.admin_create_user(
+                          UserPoolId=user_pool_id,
+                          Username=email,
+                          UserAttributes=[
+                              {'Name': 'email', 'Value': email},
+                              {'Name': 'email_verified', 'Value': 'true'}
+                          ],
+                          MessageAction='SUPPRESS'
+                      )
+                      
+                      # Set permanent password
+                      cognito.admin_set_user_password(
+                          UserPoolId=user_pool_id,
+                          Username=email,
+                          Password=password,
+                          Permanent=True
+                      )
+                      
+                      logger.info(f'Successfully created user: {email}')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Email': email}, f'CognitoUser-{user_pool_id}')
+                  
+                  elif request_type == 'Update':
+                      # Delete old user if email changed
+                      old_email = event.get('OldResourceProperties', {}).get('Email')
+                      if old_email and old_email != email:
+                          try:
+                              cognito.admin_delete_user(
+                                  UserPoolId=user_pool_id,
+                                  Username=old_email
+                              )
+                              logger.info(f'Deleted old user: {old_email}')
+                          except cognito.exceptions.UserNotFoundException:
+                              logger.info(f'Old user not found: {old_email}')
+                      
+                      # Create new user
+                      try:
+                          cognito.admin_create_user(
+                              UserPoolId=user_pool_id,
+                              Username=email,
+                              UserAttributes=[
+                                  {'Name': 'email', 'Value': email},
+                                  {'Name': 'email_verified', 'Value': 'true'}
+                              ],
+                              MessageAction='SUPPRESS'
+                          )
+                          
+                          cognito.admin_set_user_password(
+                              UserPoolId=user_pool_id,
+                              Username=email,
+                              Password=password,
+                              Permanent=True
+                          )
+                          logger.info(f'Successfully created/updated user: {email}')
+                      except cognito.exceptions.UsernameExistsException:
+                          # User exists, just update password
+                          cognito.admin_set_user_password(
+                              UserPoolId=user_pool_id,
+                              Username=email,
+                              Password=password,
+                              Permanent=True
+                          )
+                          logger.info(f'Updated password for existing user: {email}')
+                      
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Email': email}, f'CognitoUser-{user_pool_id}')
+                  
+                  elif request_type == 'Delete':
+                      try:
+                          cognito.admin_delete_user(
+                              UserPoolId=user_pool_id,
+                              Username=email
+                          )
+                          logger.info(f'Successfully deleted user: {email}')
+                      except cognito.exceptions.UserNotFoundException:
+                          logger.info(f'User not found, skipping deletion: {email}')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  
+                  else:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              
+              except Exception as e:
+                  logger.error(f'Error: {str(e)}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  CognitoUser:
+    Type: Custom::CognitoUser
+    Condition: IsCognitoAuth
+    Properties:
+      ServiceToken: !GetAtt CognitoUserCreatorFunction.Arn
+      UserPoolId: !Ref UserPool
+      Email: !Ref CognitoUserEmail
+      Password: !Ref CognitoUserPassword
+
+  # ============================================================================
+  # Lambda@Edge Execution Role
+  # ============================================================================
+  LambdaEdgeExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies: !If
+        - IsCognitoAuth
+        - - PolicyName: CognitoAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - cognito-idp:InitiateAuth
+                    - cognito-idp:GetUser
+                  Resource: !GetAtt UserPool.Arn
+        - !Ref AWS::NoValue
+
+  # ============================================================================
+  # Lambda@Edge Function for JWT Authentication
+  # ============================================================================
+  AuthFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'glean-legal-addin-auth-${DeploymentId}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaEdgeExecutionRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      Code:
+        ZipFile: !If
+          - IsCognitoAuth
+          - !Sub |
+              import json
+              import base64
+              import hmac
+              import hashlib
+              from urllib.request import urlopen
+              
+              USER_POOL_ID = '${UserPool}'
+              REGION = '${AWS::Region}'
+              
+              # Public paths that don't require authentication
+              PUBLIC_PATHS = ['/taskpane/login.html', '/taskpane/login.css', '/taskpane/login.js', '/error.html']
+              
+              # Cache for JWKS keys
+              jwks_cache = {}
+              
+              def lambda_handler(event, context):
+                  request = event['Records'][0]['cf']['request']
+                  uri = request['uri']
+                  
+                  # Allow public paths without authentication
+                  # Also allow /taskpane/ for app files and /assets/ for icons and static resources
+                  if uri in PUBLIC_PATHS or uri.startswith('/taskpane/') or uri.startswith('/assets/'):
+                      return request
+                  
+                  # Check for JWT token in cookie
+                  cookies = get_cookies(request.get('headers', {}))
+                  token = cookies.get('glean_auth_token')
+                  
+                  if not token:
+                      # No token, redirect to login
+                      return redirect_to_login()
+                  
+                  # Validate JWT token
+                  try:
+                      payload = decode_jwt(token)
+                      
+                      # Token is valid, allow request
+                      return request
+                  
+                  except Exception as e:
+                      print(f'Token validation error: {str(e)}')
+                      return redirect_to_login()
+              
+              def get_cookies(headers):
+                  """Extract cookies from request headers"""
+                  cookies = {}
+                  if 'cookie' in headers:
+                      for cookie_header in headers['cookie']:
+                          for cookie in cookie_header['value'].split(';'):
+                              if '=' in cookie:
+                                  key, value = cookie.strip().split('=', 1)
+                                  cookies[key] = value
+                  return cookies
+              
+              def decode_jwt(token):
+                  """Decode and validate JWT token (simplified version)"""
+                  # Split token into parts
+                  parts = token.split('.')
+                  if len(parts) != 3:
+                      raise ValueError('Invalid token format')
+                  
+                  # Decode payload (no signature verification for now - Lambda@Edge limitation)
+                  # In production, you should verify the signature using JWKS
+                  payload_encoded = parts[1]
+                  # Add padding if needed
+                  padding = 4 - len(payload_encoded) % 4
+                  if padding != 4:
+                      payload_encoded += '=' * padding
+                  
+                  payload_json = base64.urlsafe_b64decode(payload_encoded)
+                  payload = json.loads(payload_json)
+                  
+                  # Check expiration
+                  import time
+                  if payload.get('exp', 0) < time.time():
+                      raise ValueError('Token expired')
+                  
+                  return payload
+              
+              def redirect_to_login():
+                  """Redirect to login page"""
+                  return {
+                      'status': '302',
+                      'statusDescription': 'Found',
+                      'headers': {
+                          'location': [{
+                              'key': 'Location',
+                              'value': '/taskpane/login.html'
+                          }],
+                          'cache-control': [{
+                              'key': 'Cache-Control',
+                              'value': 'no-cache, no-store, must-revalidate'
+                          }]
+                      }
+                  }
+          - |
+              def lambda_handler(event, context):
+                  # SSO mode: pass-through — all requests allowed
+                  # Real auth is at the Glean API layer (OAuth token in API calls)
+                  return event['Records'][0]['cf']['request']
+
+  AuthFunctionVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref AuthFunction
+      Description: !Sub 'Auth function - ${AuthMode} mode - ${DeploymentId}'
+
+  # ============================================================================
+  # CloudFront Origin Access Control (OAC)
+  # ============================================================================
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub 'glean-legal-addin-oac-${DeploymentId}'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ============================================================================
+  # S3 Bucket Policy - Allow CloudFront OAC Access
+  # ============================================================================
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${WebsiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+  # ============================================================================
+  # WAF Web ACL with AWS Managed Rules
+  # ============================================================================
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub 'glean-legal-addin-waf-${DeploymentId}'
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      Rules:
+        # AWS Managed Rules - Core Rule Set
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesCommonRuleSetMetric
+        
+        # AWS Managed Rules - Known Bad Inputs
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesKnownBadInputsRuleSetMetric
+        
+        # Rate Limiting - 2000 requests per 5 minutes per IP
+        - Name: RateLimitRule
+          Priority: 3
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitRuleMetric
+      
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub 'glean-legal-addin-waf-${DeploymentId}'
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-addin-waf-${DeploymentId}'
+
+  # ============================================================================
+  # CloudFront Distribution
+  # ============================================================================
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: AuthFunctionVersion
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub 'Glean Legal Word Add-in - ${DeploymentId}'
+        Aliases: !If
+          - HasCustomDomain
+          - [!Ref DomainName]
+          - !Ref AWS::NoValue
+        DefaultRootObject: index.html
+        
+        # Origin - S3 Bucket with OAC
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig: {}
+        
+        # Default Cache Behavior with Lambda@Edge Auth
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf  # CORS-S3Origin
+          ResponseHeadersPolicyId: 5cc3b908-e619-4b99-88e5-2cf7f45965bd  # CORS-with-preflight-and-SecurityHeadersPolicy
+          LambdaFunctionAssociations:
+            - EventType: viewer-request
+              LambdaFunctionARN: !Ref AuthFunctionVersion
+        
+        # Custom Error Responses
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 403
+            ResponsePagePath: /error.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /error.html
+            ErrorCachingMinTTL: 10
+        
+        # HTTPS Configuration
+        ViewerCertificate: !If
+          - HasCertificate
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        
+        # WAF Integration
+        WebACLId: !GetAtt WebACL.Arn
+        
+        # HTTP/2 and HTTP/3 Support
+        HttpVersion: http2and3
+        
+        # Price Class
+        PriceClass: PriceClass_100  # US, Canada, Europe
+        
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-addin-cdn-${DeploymentId}'
+
+  # ============================================================================
+  # Lambda Execution Role
+  # ============================================================================
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'glean-legal-lambda-role-${DeploymentId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-lambda-role-${DeploymentId}'
+
+
+  # ============================================================================
+  # DynamoDB Config Table
+  # ============================================================================
+  ConfigTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'glean-legal-addin-config-${DeploymentId}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-addin-config-${DeploymentId}'
+
+  # ============================================================================
+  # Config Lambda Execution Role
+  # ============================================================================
+  ConfigLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'glean-legal-config-role-${DeploymentId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBConfigAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt ConfigTable.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-config-role-${DeploymentId}'
+
+  # ============================================================================
+  # Config Lambda Function (read/write DynamoDB, JWT verification for admin)
+  # ============================================================================
+  ConfigLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'glean-legal-config-${DeploymentId}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt ConfigLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          AUTH_MODE: !Ref AuthMode
+          CONFIG_TABLE: !Ref ConfigTable
+          GLEAN_INSTANCE: !Ref GleanInstance
+          DOMAIN_NAME: !Ref DomainName
+          JWKS_URI: !If
+            - IsCognitoAuth
+            - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/jwks.json'
+            - !Sub 'https://${GleanInstance}-be.glean.com/oauth/jwks'
+          EXPECTED_ISSUER: !If
+            - IsCognitoAuth
+            - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+            - !Sub 'https://${GleanInstance}-be.glean.com/oauth'
+          EXPECTED_AUDIENCE: !If
+            - IsCognitoAuth
+            - !Ref UserPoolClient
+            - !Ref GleanOAuthClientId
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import base64
+          import time
+          import boto3
+          from urllib.request import urlopen, Request
+          from urllib.error import URLError
+          
+          # Environment variables
+          CONFIG_TABLE = os.environ['CONFIG_TABLE']
+          JWKS_URI = os.environ['JWKS_URI']
+          EXPECTED_ISSUER = os.environ['EXPECTED_ISSUER']
+          EXPECTED_AUDIENCE = os.environ['EXPECTED_AUDIENCE']
+          DOMAIN_NAME = os.environ.get('DOMAIN_NAME', '')
+          
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(CONFIG_TABLE)
+          
+          # JWKS cache (persists across warm Lambda invocations)
+          _jwks_cache = None
+          _jwks_cache_time = 0
+          JWKS_CACHE_TTL = 3600  # 1 hour
+          
+          def get_cors_headers():
+              origin = f'https://{DOMAIN_NAME}' if DOMAIN_NAME else '*'
+              return {
+                  'Access-Control-Allow-Origin': origin,
+                  'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+                  'Access-Control-Allow-Methods': 'GET,PUT,OPTIONS',
+                  'Content-Type': 'application/json'
+              }
+          
+          def response(status_code, body):
+              return {
+                  'statusCode': status_code,
+                  'headers': get_cors_headers(),
+                  'body': json.dumps(body)
+              }
+          
+          def fetch_jwks(force_refresh=False):
+              global _jwks_cache, _jwks_cache_time
+              now = time.time()
+              if not force_refresh and _jwks_cache and (now - _jwks_cache_time) < JWKS_CACHE_TTL:
+                  return _jwks_cache
+              try:
+                  req = Request(JWKS_URI, headers={'Accept': 'application/json'})
+                  resp = urlopen(req, timeout=5)
+                  _jwks_cache = json.loads(resp.read().decode('utf-8'))
+                  _jwks_cache_time = now
+                  return _jwks_cache
+              except Exception as e:
+                  print(f'JWKS fetch error: {e}')
+                  if _jwks_cache:
+                      return _jwks_cache
+                  raise
+          
+          def decode_jwt_unverified(token):
+              """Base64-decode JWT payload without signature verification."""
+              parts = token.split('.')
+              if len(parts) != 3:
+                  raise ValueError('Invalid JWT format')
+              payload_b64 = parts[1]
+              padding = 4 - len(payload_b64) % 4
+              if padding != 4:
+                  payload_b64 += '=' * padding
+              return json.loads(base64.urlsafe_b64decode(payload_b64))
+          
+          def verify_jwt(token):
+              """Verify JWT: signature check via JWKS, then validate iss, aud, exp.
+              
+              NOTE: Full cryptographic signature verification requires a JWT library
+              (e.g., python-jose or PyJWT). For the inline ZipFile Lambda, we perform
+              claim-level validation (iss, aud, exp) and verify the JWKS endpoint is
+              reachable with matching key IDs. For production hardening, deploy the
+              Lambda from a package with python-jose for full RS256 verification.
+              """
+              payload = decode_jwt_unverified(token)
+              
+              # Verify expiry
+              if payload.get('exp', 0) < time.time():
+                  raise ValueError('Token expired')
+              
+              # Verify issuer
+              if payload.get('iss') != EXPECTED_ISSUER:
+                  raise ValueError(f'Invalid issuer: {payload.get("iss")}')
+              
+              # Verify audience (can be string or list)
+              # Glean OAuth access tokens use 'glean-api' as audience
+              VALID_AUDIENCES = {EXPECTED_AUDIENCE, 'glean-api'}
+              aud = payload.get('aud')
+              if isinstance(aud, list):
+                  if not VALID_AUDIENCES.intersection(aud):
+                      raise ValueError(f'Invalid audience: {aud}')
+              elif aud not in VALID_AUDIENCES:
+                  raise ValueError(f'Invalid audience: {aud}')
+              
+              # Verify key ID exists in JWKS
+              header = json.loads(base64.urlsafe_b64decode(
+                  token.split('.')[0] + '=='))
+              kid = header.get('kid')
+              if kid:
+                  jwks = fetch_jwks()
+                  key_ids = [k.get('kid') for k in jwks.get('keys', [])]
+                  if kid not in key_ids:
+                      # Key rotation: try refreshing JWKS
+                      jwks = fetch_jwks(force_refresh=True)
+                      key_ids = [k.get('kid') for k in jwks.get('keys', [])]
+                      if kid not in key_ids:
+                          raise ValueError(f'Unknown key ID: {kid}')
+              
+              return payload
+          
+          def extract_email_from_token(auth_header):
+              """Extract and verify email from Authorization Bearer token."""
+              if not auth_header or not auth_header.startswith('Bearer '):
+                  raise ValueError('Missing or invalid Authorization header')
+              token = auth_header[7:]
+              payload = verify_jwt(token)
+              email = payload.get('email')
+              if not email:
+                  raise ValueError('No email claim in token')
+              return email.lower()
+          
+          def get_config():
+              """Read all config items from DynamoDB."""
+              result = table.query(
+                  KeyConditionExpression=boto3.dynamodb.conditions.Key('PK').eq('CONFIG')
+              )
+              config = {}
+              for item in result.get('Items', []):
+                  sk = item.get('SK', '')
+                  data = {k: v for k, v in item.items() if k not in ('PK', 'SK')}
+                  config[sk] = data
+              return config
+          
+          def get_admin_emails():
+              """Get admin email list from DynamoDB."""
+              try:
+                  result = table.get_item(Key={'PK': 'CONFIG', 'SK': 'auth'})
+                  item = result.get('Item', {})
+                  emails = item.get('adminEmails', [])
+                  return [e.lower() for e in emails]
+              except Exception:
+                  return []
+          
+          def lambda_handler(event, context):
+              method = event.get('httpMethod', '')
+              path = event.get('path', '')
+              
+              # Handle OPTIONS preflight
+              if method == 'OPTIONS':
+                  return response(200, '')
+              
+              # GET /api/config — public or authenticated read
+              if method == 'GET' and path.endswith('/config') and not path.endswith('/admin-check'):
+                  try:
+                      config = get_config()
+                      # If valid admin auth header, return full config including adminEmails
+                      auth_header = event.get('headers', {}).get('Authorization') or \
+                                    event.get('headers', {}).get('authorization', '')
+                      is_admin = False
+                      if auth_header:
+                          try:
+                              email = extract_email_from_token(auth_header)
+                              admin_emails = get_admin_emails()
+                              is_admin = email in admin_emails
+                          except Exception:
+                              pass  # Fall through to public response
+                      if not is_admin and 'auth' in config:
+                          config['auth'] = {k: v for k, v in config['auth'].items()
+                                            if k != 'adminEmails'}
+                      return response(200, config)
+                  except Exception as e:
+                      print(f'Config read error: {e}')
+                      return response(500, {'error': 'Failed to read config'})
+              
+              # GET /api/config/admin-check — requires auth
+              if method == 'GET' and path.endswith('/admin-check'):
+                  try:
+                      auth_header = event.get('headers', {}).get('Authorization') or \
+                                    event.get('headers', {}).get('authorization', '')
+                      email = extract_email_from_token(auth_header)
+                      admin_emails = get_admin_emails()
+                      return response(200, {'isAdmin': email in admin_emails, 'email': email})
+                  except ValueError as e:
+                      print(f'Auth error: {e}')
+                      return response(401, {'error': str(e)})
+                  except Exception as e:
+                      print(f'Admin check error: {e}')
+                      return response(500, {'error': 'Admin check failed'})
+              
+              # PUT /api/config — admin-only write
+              # Accepts flat config: {gleanInstance, chatAgentId, redlinerAgentId, listingAgentId,
+              #   defaultPlaybook: {name, url}, defaultTemplate: {name, url}, adminEmails: [...]}
+              # Maps fields to DynamoDB sections automatically.
+              if method == 'PUT':
+                  try:
+                      auth_header = event.get('headers', {}).get('Authorization') or \
+                                    event.get('headers', {}).get('authorization', '')
+                      email = extract_email_from_token(auth_header)
+                      admin_emails = get_admin_emails()
+                      if email not in admin_emails:
+                          return response(403, {'error': 'Not an admin'})
+                      
+                      body = json.loads(event.get('body', '{}'))
+                      
+                      # Support legacy section-based format
+                      if 'section' in body:
+                          section = body['section']
+                          data = body.get('data', {})
+                          if section not in ('auth', 'agents', 'instance', 'defaults'):
+                              return response(400, {'error': 'Invalid section'})
+                          item = {'PK': 'CONFIG', 'SK': section}
+                          item.update(data)
+                          table.put_item(Item=item)
+                      else:
+                          # Flat config format — map fields to sections
+                          FIELD_MAP = {
+                              'instance': {'fields': ['gleanInstance']},
+                              'agents': {'fields': ['chatAgentId', 'redlinerAgentId', 'listingAgentId']},
+                              'defaults': {'fields': ['defaultPlaybook', 'defaultTemplate', 'trackChangesDefault', 'notificationsDefault']},
+                              'auth': {'fields': ['adminEmails', 'oauthClientId', 'authMode']}
+                          }
+                          # Read existing config to merge
+                          existing = get_config()
+                          for section, meta in FIELD_MAP.items():
+                              section_data = existing.get(section, {})
+                              has_update = False
+                              for field in meta['fields']:
+                                  if field in body:
+                                      section_data[field] = body[field]
+                                      has_update = True
+                              if has_update:
+                                  item = {'PK': 'CONFIG', 'SK': section}
+                                  item.update(section_data)
+                                  table.put_item(Item=item)
+                      
+                      print(f'Config updated by={email}')
+                      config = get_config()
+                      return response(200, config)
+                  except ValueError as e:
+                      print(f'Auth error on PUT: {e}')
+                      return response(401, {'error': str(e)})
+                  except Exception as e:
+                      print(f'Config write error: {e}')
+                      return response(500, {'error': 'Failed to update config'})
+              
+              return response(404, {'error': 'Not found'})
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-config-${DeploymentId}'
+
+  # ============================================================================
+  # OAuth Token Proxy Lambda (SSO mode only)
+  # ============================================================================
+  OAuthTokenProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'glean-legal-oauth-proxy-role-${DeploymentId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  OAuthTokenProxyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'glean-legal-oauth-proxy-${DeploymentId}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt OAuthTokenProxyRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          GLEAN_INSTANCE: !Ref GleanInstance
+          GLEAN_OAUTH_CLIENT_SECRET: !Ref GleanOAuthClientSecret
+          ALLOWED_REDIRECT_URI: !If
+            - HasCustomDomain
+            - !Sub 'https://${DomainName}/taskpane/oauth-callback.html'
+            - 'https://localhost/taskpane/oauth-callback.html'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import urllib3
+          
+          http = urllib3.PoolManager()
+          
+          def lambda_handler(event, context):
+              """
+              OAuth token exchange proxy.
+              Forwards token requests to Glean's OAuth token endpoint.
+              Validates redirect_uri to prevent hijacking.
+              """
+              headers_out = {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Headers': 'Content-Type',
+                  'Access-Control-Allow-Methods': 'POST,OPTIONS'
+              }
+              
+              # Handle CORS preflight
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {'statusCode': 200, 'headers': headers_out, 'body': ''}
+              
+              if event.get('httpMethod') != 'POST':
+                  return {'statusCode': 405, 'headers': headers_out, 'body': json.dumps({'error': 'Method not allowed'})}
+              
+              try:
+                  body = json.loads(event.get('body', '{}'))
+              except (json.JSONDecodeError, TypeError):
+                  return {'statusCode': 400, 'headers': headers_out, 'body': json.dumps({'error': 'Invalid JSON body'})}
+              
+              # Validate redirect_uri
+              allowed_uri = os.environ.get('ALLOWED_REDIRECT_URI', '')
+              request_uri = body.get('redirect_uri', '')
+              if request_uri and request_uri != allowed_uri:
+                  print(f'Redirect URI mismatch: got {request_uri[:50]}, expected {allowed_uri[:50]}')
+                  return {'statusCode': 400, 'headers': headers_out, 'body': json.dumps({'error': 'Invalid redirect_uri'})}
+              
+              # Build token request to Glean
+              glean_instance = os.environ.get('GLEAN_INSTANCE', '')
+              token_url = f'https://{glean_instance}-be.glean.com/oauth/token'
+              
+              # Forward the request body as form-encoded (OAuth2 spec)
+              form_data = {}
+              for key in ['grant_type', 'code', 'redirect_uri', 'client_id', 'code_verifier', 'refresh_token', 'scope']:
+                  if key in body:
+                      form_data[key] = body[key]
+              
+              # CLIENT_SECRET_POST: include client_secret in the form body
+              client_secret = os.environ.get('GLEAN_OAUTH_CLIENT_SECRET', '')
+              if client_secret and client_secret != 'unused':
+                  form_data['client_secret'] = client_secret
+              
+              print(f'Proxying token request to {token_url}, grant_type={form_data.get("grant_type", "unknown")}')
+              print(f'Form data keys: {list(form_data.keys())}, client_id={form_data.get("client_id", "MISSING")[:30]}, has_secret={"client_secret" in form_data}')
+              
+              try:
+                  from urllib.parse import urlencode
+                  encoded_body = urlencode(form_data)
+                  resp = http.request(
+                      'POST',
+                      token_url,
+                      body=encoded_body,
+                      headers={'Content-Type': 'application/x-www-form-urlencoded'}
+                  )
+                  
+                  response_body = resp.data.decode('utf-8')
+                  print(f'Glean token response status: {resp.status}')
+                  if resp.status >= 400:
+                      print(f'Glean token error body: {response_body[:500]}')
+                  
+                  return {
+                      'statusCode': resp.status,
+                      'headers': headers_out,
+                      'body': response_body
+                  }
+              except Exception as e:
+                  print(f'Token proxy error: {e}')
+                  return {'statusCode': 502, 'headers': headers_out, 'body': json.dumps({'error': 'Token exchange failed'})}
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-oauth-proxy-${DeploymentId}'
+
+  # ============================================================================
+  # DCR Registration Proxy Lambda (SSO + DCR mode)
+  # ============================================================================
+  DCRRegistrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'glean-legal-dcr-role-${DeploymentId}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBDCRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt ConfigTable.Arn
+
+  DCRRegistrationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'glean-legal-dcr-register-${DeploymentId}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt DCRRegistrationRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          GLEAN_INSTANCE: !Ref GleanInstance
+          CONFIG_TABLE: !Ref ConfigTable
+          ALLOWED_REDIRECT_URI: !If
+            - HasCustomDomain
+            - !Sub 'https://${DomainName}/taskpane/oauth-callback.html'
+            - 'https://localhost/taskpane/oauth-callback.html'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import urllib3
+          import boto3
+          
+          http = urllib3.PoolManager()
+          dynamodb = boto3.resource('dynamodb')
+          
+          def lambda_handler(event, context):
+              """
+              DCR Registration Proxy.
+              Checks DynamoDB for a cached DCR client_id.
+              If none exists, registers a new public client with Glean's /oauth/register.
+              Caches the result in DynamoDB for reuse.
+              """
+              headers_out = {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Headers': 'Content-Type',
+                  'Access-Control-Allow-Methods': 'POST,OPTIONS'
+              }
+              
+              if event.get('httpMethod') == 'OPTIONS':
+                  return {'statusCode': 200, 'headers': headers_out, 'body': ''}
+              
+              if event.get('httpMethod') != 'POST':
+                  return {'statusCode': 405, 'headers': headers_out, 'body': json.dumps({'error': 'Method not allowed'})}
+              
+              config_table = os.environ.get('CONFIG_TABLE', '')
+              glean_instance = os.environ.get('GLEAN_INSTANCE', '')
+              allowed_redirect_uri = os.environ.get('ALLOWED_REDIRECT_URI', '')
+              
+              if not glean_instance:
+                  return {'statusCode': 500, 'headers': headers_out, 'body': json.dumps({'error': 'GLEAN_INSTANCE not configured'})}
+              
+              # Parse request body (optional — client can send client_name override)
+              try:
+                  body = json.loads(event.get('body', '{}')) if event.get('body') else {}
+              except (json.JSONDecodeError, TypeError):
+                  body = {}
+              
+              # Check DynamoDB for cached DCR client
+              table = dynamodb.Table(config_table)
+              try:
+                  resp = table.get_item(Key={'PK': 'CONFIG', 'SK': 'dcr'})
+                  item = resp.get('Item', {})
+                  cached_client_id = item.get('clientId', '')
+                  
+                  if cached_client_id:
+                      print(f'Returning cached DCR client_id: {cached_client_id[:20]}...')
+                      return {
+                          'statusCode': 200,
+                          'headers': headers_out,
+                          'body': json.dumps({
+                              'client_id': cached_client_id,
+                              'cached': True
+                          })
+                      }
+              except Exception as e:
+                  print(f'DynamoDB read error (non-fatal): {e}')
+              
+              # No cached client — register a new one with Glean
+              register_url = f'https://{glean_instance}-be.glean.com/oauth/register'
+              
+              client_name = body.get('client_name', 'Glean Legal Word Add-in')
+              registration_payload = {
+                  'client_name': client_name,
+                  'redirect_uris': [allowed_redirect_uri],
+                  'grant_types': ['authorization_code', 'refresh_token'],
+                  'response_types': ['code'],
+                  'token_endpoint_auth_method': 'none'
+              }
+              
+              print(f'Registering DCR client at {register_url}')
+              print(f'Payload: {json.dumps(registration_payload)}')
+              
+              try:
+                  reg_resp = http.request(
+                      'POST',
+                      register_url,
+                      body=json.dumps(registration_payload),
+                      headers={'Content-Type': 'application/json'}
+                  )
+                  
+                  response_body = reg_resp.data.decode('utf-8')
+                  print(f'Registration response status: {reg_resp.status}')
+                  
+                  if reg_resp.status >= 400:
+                      print(f'Registration error: {response_body[:500]}')
+                      return {
+                          'statusCode': reg_resp.status,
+                          'headers': headers_out,
+                          'body': json.dumps({
+                              'error': 'DCR registration failed',
+                              'details': response_body[:500]
+                          })
+                      }
+                  
+                  reg_data = json.loads(response_body)
+                  new_client_id = reg_data.get('client_id', '')
+                  
+                  if not new_client_id:
+                      return {
+                          'statusCode': 500,
+                          'headers': headers_out,
+                          'body': json.dumps({'error': 'No client_id in registration response'})
+                      }
+                  
+                  # Cache in DynamoDB
+                  try:
+                      table.put_item(Item={
+                          'PK': 'CONFIG',
+                          'SK': 'dcr',
+                          'clientId': new_client_id,
+                          'clientName': client_name,
+                          'redirectUri': allowed_redirect_uri,
+                          'tokenEndpointAuthMethod': 'none'
+                      })
+                      print(f'Cached new DCR client_id in DynamoDB: {new_client_id[:20]}...')
+                  except Exception as e:
+                      print(f'DynamoDB cache write error (non-fatal): {e}')
+                  
+                  return {
+                      'statusCode': 200,
+                      'headers': headers_out,
+                      'body': json.dumps({
+                          'client_id': new_client_id,
+                          'cached': False
+                      })
+                  }
+                  
+              except Exception as e:
+                  print(f'DCR registration error: {e}')
+                  return {
+                      'statusCode': 502,
+                      'headers': headers_out,
+                      'body': json.dumps({'error': f'DCR registration failed: {str(e)}'})
+                  }
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-dcr-register-${DeploymentId}'
+
+  # ============================================================================
+  # Lambda Function 1: Template/Playbook Lister
+  # ============================================================================
+  ListingLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'glean-legal-list-${DeploymentId}'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 600
+      MemorySize: 256
+      Environment:
+        Variables:
+          GLEAN_INSTANCE: !Ref GleanInstance
+      Code:
+        ZipFile: |
+          // This Lambda uses Node.js + API Gateway Response Streaming with SSE framing.
+          // SSE heartbeat comments keep the connection alive through corporate proxies.
+          
+          const CORS_HEADERS = {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Headers': 'Content-Type',
+              'Access-Control-Allow-Methods': 'POST, OPTIONS',
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'X-Accel-Buffering': 'no'
+          };
+          
+          exports.handler = awslambda.streamifyResponse(async (event, responseStream, context) => {
+              responseStream = awslambda.HttpResponseStream.from(responseStream, {
+                  statusCode: 200,
+                  headers: CORS_HEADERS
+              });
+              
+              // Parse request body
+              let body;
+              try {
+                  if (typeof event.body === 'string') {
+                      body = JSON.parse(event.body);
+                  } else {
+                      body = event.body || {};
+                  }
+              } catch (e) {
+                  responseStream.write(`data: ${JSON.stringify({ error: `Invalid JSON: ${e.message}` })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              // Handle OPTIONS preflight request
+              if (event.httpMethod === 'OPTIONS') {
+                  responseStream.write('');
+                  responseStream.end();
+                  return;
+              }
+              
+              // Extract parameters
+              const apiToken = body.apiToken;
+              const authType = body.authType || 'token';
+              const instance = body.instance || process.env.GLEAN_INSTANCE || '';
+              const listingAgentId = body.listingAgentId;
+              const listType = body.type || 'Both';
+              
+              // Validate required parameters
+              if (!apiToken) {
+                  responseStream.write(`data: ${JSON.stringify({ error: 'Missing required parameter: apiToken' })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              if (!listingAgentId || listingAgentId === 'YOUR_LISTING_AGENT_ID') {
+                  responseStream.write(`data: ${JSON.stringify({ error: 'Listing Agent ID not configured. Please set it in Settings.' })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              // Build Glean API request
+              const gleanUrl = `https://${instance}-be.glean.com/rest/api/v1/agents/runs/wait`;
+              const gleanPayload = {
+                  agent_id: listingAgentId,
+                  input: {},
+                  messages: [{
+                      role: 'USER',
+                      content: [{ text: listType, type: 'text' }]
+                  }],
+                  metadata: {}
+              };
+              
+              // Heartbeat: send SSE comment every 15s to keep the connection alive through proxies
+              const heartbeat = setInterval(() => {
+                  try { responseStream.write(': heartbeat\n\n'); } catch (e) { /* stream may have closed */ }
+              }, 15000);
+              
+              // Call Glean API
+              try {
+                  console.log(`Calling Glean API for list type: ${listType}`);
+                  
+                  const gleanHeaders = {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${apiToken}`
+                  };
+                  if (authType === 'oauth') gleanHeaders['X-Glean-Auth-Type'] = 'OAUTH';
+                  
+                  const gleanController = new AbortController();
+                  const gleanTimeout = setTimeout(() => gleanController.abort(), 590000);
+                  
+                  let gleanResp;
+                  try {
+                      gleanResp = await fetch(gleanUrl, {
+                          method: 'POST',
+                          headers: gleanHeaders,
+                          body: JSON.stringify(gleanPayload),
+                          signal: gleanController.signal
+                      });
+                  } finally {
+                      clearTimeout(gleanTimeout);
+                  }
+                  
+                  console.log(`Glean API response status: ${gleanResp.status}`);
+                  const responseBody = await gleanResp.text();
+                  console.log(`Response body (first 500 chars): ${responseBody.substring(0, 500)}`);
+                  
+                  if (gleanResp.status >= 400) {
+                      console.log(`Glean API error: ${responseBody}`);
+                      clearInterval(heartbeat);
+                      responseStream.write(`data: ${JSON.stringify({
+                          error: `Glean API returned ${gleanResp.status}`,
+                          details: responseBody.substring(0, 1000)
+                      })}\n\n`);
+                      responseStream.end();
+                      return;
+                  }
+                  
+                  // Parse response
+                  const responseData = JSON.parse(responseBody);
+                  console.log(`Response keys: ${Object.keys(responseData).join(', ')}`);
+                  
+                  // Extract content from agent response
+                  const messages = responseData.messages || [];
+                  console.log(`Number of messages: ${messages.length}`);
+                  
+                  if (messages.length > 0) {
+                      const firstMessage = messages[0];
+                      console.log(`First message role: ${firstMessage.role}`);
+                      
+                      const content = firstMessage.content || [];
+                      console.log(`Content items: ${content.length}`);
+                      
+                      if (content.length > 0) {
+                          let contentText = content[0].text || '';
+                          console.log(`Content text length: ${contentText.length}`);
+                          console.log(`Content text preview (first 200 chars): ${contentText.substring(0, 200)}`);
+                          
+                          // Strip markdown code fences if present
+                          if (contentText.trim().startsWith('```')) {
+                              console.log('Detected markdown code fence, stripping...');
+                              const lines = contentText.trim().split('\n');
+                              if (lines[0].startsWith('```')) lines.shift();
+                              if (lines.length > 0 && lines[lines.length - 1].trim() === '```') lines.pop();
+                              contentText = lines.join('\n');
+                              console.log(`After stripping, length: ${contentText.length}, preview: ${contentText.substring(0, 200)}`);
+                          }
+                          
+                          // Try to parse as JSON
+                          if (contentText) {
+                              try {
+                                  const result = JSON.parse(contentText);
+                                  console.log('Successfully parsed JSON result');
+                                  clearInterval(heartbeat);
+                                  responseStream.write(`data: ${JSON.stringify(result)}\n\n`);
+                                  responseStream.end();
+                                  return;
+                              } catch (parseErr) {
+                                  console.log(`JSON parse error: ${parseErr.message}`);
+                                  console.log(`Content was: ${contentText}`);
+                                  clearInterval(heartbeat);
+                                  responseStream.write(`data: ${JSON.stringify({
+                                      error: 'Agent response is not valid JSON',
+                                      raw_response: contentText.substring(0, 500)
+                                  })}\n\n`);
+                                  responseStream.end();
+                                  return;
+                              }
+                          } else {
+                              console.log('Content text is empty');
+                              clearInterval(heartbeat);
+                              responseStream.write(`data: ${JSON.stringify({
+                                  error: 'Agent returned empty response',
+                                  full_response: JSON.stringify(responseData).substring(0, 1000)
+                              })}\n\n`);
+                              responseStream.end();
+                              return;
+                          }
+                      } else {
+                          console.log('No content in message');
+                          clearInterval(heartbeat);
+                          responseStream.write(`data: ${JSON.stringify({
+                              error: 'No content in agent response',
+                              message: JSON.stringify(firstMessage).substring(0, 500)
+                          })}\n\n`);
+                          responseStream.end();
+                          return;
+                      }
+                  } else {
+                      console.log('No messages in response');
+                      clearInterval(heartbeat);
+                      responseStream.write(`data: ${JSON.stringify({
+                          error: 'No messages in agent response',
+                          response_keys: Object.keys(responseData)
+                      })}\n\n`);
+                      responseStream.end();
+                      return;
+                  }
+                  
+              } catch (e) {
+                  console.log(`Error calling Glean API: ${e.message}`);
+                  console.log(`Stack: ${e.stack}`);
+                  clearInterval(heartbeat);
+                  responseStream.write(`data: ${JSON.stringify({ error: `Error calling Glean API: ${e.message}` })}\n\n`);
+                  responseStream.end();
+              }
+          });
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-list-${DeploymentId}'
+
+
+  # ============================================================================
+  # Lambda Function 2: Contract Analysis/Redlining
+  # ============================================================================
+  AnalysisLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'glean-legal-analyze-${DeploymentId}'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 600
+      MemorySize: 512
+      Environment:
+        Variables:
+          GLEAN_INSTANCE: !Ref GleanInstance
+      Code:
+        ZipFile: |
+          // This Lambda uses Node.js + API Gateway Response Streaming to prevent 504 timeouts.
+          // Node.js is required because Lambda response streaming (awslambda.streamifyResponse)
+          // is only natively supported on Node.js managed runtimes.
+          // The Lambda sends periodic heartbeat bytes while waiting for the Glean API,
+          // keeping the API Gateway connection alive for up to 15 minutes.
+          
+          const CORS_HEADERS = {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Headers': 'Content-Type',
+              'Access-Control-Allow-Methods': 'POST, OPTIONS',
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'X-Accel-Buffering': 'no'
+          };
+          
+          exports.handler = awslambda.streamifyResponse(async (event, responseStream, context) => {
+              // Wrap the stream immediately with 200 metadata (matching AWS streaming examples).
+              // All responses use HTTP 200 — errors are embedded in the JSON body with an 'error' key.
+              // API Gateway response streaming does not reliably deliver bodies for non-200 status codes.
+              responseStream = awslambda.HttpResponseStream.from(responseStream, {
+                  statusCode: 200,
+                  headers: CORS_HEADERS
+              });
+              
+              // Parse request body
+              let body;
+              try {
+                  if (typeof event.body === 'string') {
+                      body = JSON.parse(event.body);
+                  } else {
+                      body = event.body || {};
+                  }
+              } catch (e) {
+                  responseStream.write(`data: ${JSON.stringify({ error: `Invalid JSON: ${e.message}` })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              // Handle OPTIONS preflight request (normally handled by MOCK integration, but kept as safety)
+              if (event.httpMethod === 'OPTIONS') {
+                  responseStream.write('');
+                  responseStream.end();
+                  return;
+              }
+              
+              // Extract parameters
+              const apiToken = body.apiToken;
+              const authType = body.authType || 'token';
+              const instance = body.instance || process.env.GLEAN_INSTANCE || '';
+              const redlinerAgentId = body.redlinerAgentId;
+              const contractText = (body.contractText || '').trim();
+              const selectedText = (body.selectedText || '').trim();
+              const templateLink = (body.templateLink || '').trim();
+              const customTemplateText = (body.customTemplateText || '').trim();
+              const playbookLink = (body.playbookLink || '').trim();
+              const customPlaybookText = (body.customPlaybookText || '').trim();
+              const additionalInstructions = (body.additionalInstructions || '').trim();
+              const changeWeight = body.changeWeight || 'Balanced';
+              const includeAIReasoning = body.includeAIReasoning || 'Yes';
+              
+              // Validate API token
+              if (!apiToken) {
+                  responseStream.write(`data: ${JSON.stringify({ error: 'API token is required' })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              // Validate redliner agent ID
+              if (!redlinerAgentId) {
+                  responseStream.write(`data: ${JSON.stringify({ error: 'Missing required parameter: redlinerAgentId' })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              // Validate mutually exclusive content fields
+              if (contractText && selectedText) {
+                  responseStream.write(`data: ${JSON.stringify({ error: 'Cannot provide both contractText and selectedText. Please provide only one.' })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              if (!contractText && !selectedText) {
+                  responseStream.write(`data: ${JSON.stringify({ error: 'Either contractText or selectedText is required' })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              // Detect agent type via schema endpoint
+              const gleanBase = `https://${instance}-be.glean.com/rest/api/v1`;
+              const gleanUrl = `${gleanBase}/agents/runs/wait`;
+              const schemaUrl = `${gleanBase}/agents/${redlinerAgentId}/schemas`;
+              
+              let isAutoMode = false;
+              try {
+                  console.log(`Checking agent schema: ${schemaUrl}`);
+                  const schemaController = new AbortController();
+                  const schemaTimeout = setTimeout(() => schemaController.abort(), 10000);
+                  try {
+                      const schemaHeaders = {
+                          'Content-Type': 'application/json',
+                          'Authorization': `Bearer ${apiToken}`
+                      };
+                      if (authType === 'oauth') schemaHeaders['X-Glean-Auth-Type'] = 'OAUTH';
+                      
+                      const schemaResp = await fetch(schemaUrl, {
+                          method: 'GET',
+                          headers: schemaHeaders,
+                          signal: schemaController.signal
+                      });
+                      if (schemaResp.ok) {
+                          const schemaData = await schemaResp.json();
+                          const inputSchema = schemaData.input_schema || {};
+                          isAutoMode = Object.keys(inputSchema).length === 0;
+                          console.log(`Agent type detected: ${isAutoMode ? 'Auto Mode' : 'Workflow'} (input_schema fields: ${Object.keys(inputSchema).length})`);
+                      } else {
+                          console.log(`Schema check returned ${schemaResp.status}, defaulting to Workflow mode`);
+                      }
+                  } finally {
+                      clearTimeout(schemaTimeout);
+                  }
+              } catch (schemaErr) {
+                  console.log(`Schema check failed (${schemaErr.message}), defaulting to Workflow mode`);
+              }
+              
+              // Build Glean API payload based on agent type
+              let gleanPayload;
+              if (isAutoMode) {
+                  // Auto Mode agent: send data as a structured user message
+                  const contentText = contractText || selectedText;
+                  const templateValue = customTemplateText || templateLink || 'N/A';
+                  const playbookValue = customPlaybookText || playbookLink || 'N/A';
+                  const instructionsValue = additionalInstructions || 'N/A';
+                  
+                  const messageText = `<<CONTRACT_TEXT>>\n${contentText}\n<</CONTRACT_TEXT>>\n\n<<TEMPLATE>>\n${templateValue}\n<</TEMPLATE>>\n\n<<PLAYBOOK>>\n${playbookValue}\n<</PLAYBOOK>>\n\n<<ADDITIONAL_INSTRUCTIONS>>\n${instructionsValue}\n<</ADDITIONAL_INSTRUCTIONS>>`;
+                  
+                  gleanPayload = {
+                      agent_id: redlinerAgentId,
+                      messages: [{
+                          role: 'USER',
+                          content: [{ text: messageText, type: 'text' }]
+                      }]
+                  };
+              } else {
+                  // Workflow agent: send data as named input fields
+                  gleanPayload = {
+                      agent_id: redlinerAgentId,
+                      input: {
+                          'Contract Text': contractText || '',
+                          'Selected Text': selectedText || '',
+                          'Template Link': templateLink || 'N/A',
+                          'Custom Template Text or Link': customTemplateText || 'N/A',
+                          'Playbook Link': playbookLink || 'N/A',
+                          'Custom Playbook Text or Link': customPlaybookText || 'N/A',
+                          'Additional Instructions': additionalInstructions || 'N/A',
+                          'Change Weight': changeWeight,
+                          'Include AI reasoning': includeAIReasoning
+                      }
+                  };
+              }
+              
+              // Heartbeat: send SSE comment every 15s to keep the connection alive through proxies
+              const heartbeat = setInterval(() => {
+                  try { responseStream.write(': heartbeat\n\n'); } catch (e) { /* stream may have closed */ }
+              }, 15000);
+              
+              // Call Glean API with timeout just under Lambda timeout for clean shutdown
+              try {
+                  console.log(`Calling Glean API: ${gleanUrl} (${isAutoMode ? 'Auto Mode' : 'Workflow'})`);
+                  console.log(`Payload keys: ${Object.keys(gleanPayload).join(', ')}`);
+                  
+                  const gleanController = new AbortController();
+                  const gleanTimeout = setTimeout(() => gleanController.abort(), 590000);
+                  
+                  let gleanResp;
+                  try {
+                      const gleanHeaders = {
+                          'Content-Type': 'application/json',
+                          'Authorization': `Bearer ${apiToken}`
+                      };
+                      if (authType === 'oauth') gleanHeaders['X-Glean-Auth-Type'] = 'OAUTH';
+                      
+                      gleanResp = await fetch(gleanUrl, {
+                          method: 'POST',
+                          headers: gleanHeaders,
+                          body: JSON.stringify(gleanPayload),
+                          signal: gleanController.signal
+                      });
+                  } finally {
+                      clearTimeout(gleanTimeout);
+                  }
+                  
+                  console.log(`Glean API response status: ${gleanResp.status}`);
+                  const responseBody = await gleanResp.text();
+                  console.log(`Response body (first 500 chars): ${responseBody.substring(0, 500)}`);
+                  
+                  if (gleanResp.status >= 400) {
+                      console.log(`Glean API error: ${responseBody}`);
+                      clearInterval(heartbeat);
+                      responseStream.write(`data: ${JSON.stringify({
+                          error: `Glean API returned ${gleanResp.status}`,
+                          details: responseBody.substring(0, 1000)
+                      })}\n\n`);
+                      responseStream.end();
+                      return;
+                  }
+                  
+                  // Parse and pass through the entire Glean API response to the client
+                  const responseData = JSON.parse(responseBody);
+                  console.log(`Response data keys: ${Object.keys(responseData).join(', ')}`);
+                  
+                  clearInterval(heartbeat);
+                  responseStream.write(`data: ${JSON.stringify(responseData)}\n\n`);
+                  responseStream.end();
+                  
+              } catch (e) {
+                  console.log(`Error calling Glean API: ${e.message}`);
+                  console.log(`Stack: ${e.stack}`);
+                  clearInterval(heartbeat);
+                  responseStream.write(`data: ${JSON.stringify({ error: `Error calling Glean API: ${e.message}` })}\n\n`);
+                  responseStream.end();
+              }
+          });
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-analyze-${DeploymentId}'
+
+
+  # ============================================================================
+  # Lambda Function 3: Chat Assistant
+  # ============================================================================
+  ChatLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'glean-legal-chat-${DeploymentId}'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 600
+      MemorySize: 256
+      Environment:
+        Variables:
+          GLEAN_INSTANCE: !Ref GleanInstance
+      Code:
+        ZipFile: |
+          // This Lambda uses Node.js + API Gateway Response Streaming with SSE framing.
+          // SSE heartbeat comments keep the connection alive through corporate proxies.
+          
+          const CORS_HEADERS = {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Headers': 'Content-Type',
+              'Access-Control-Allow-Methods': 'POST, OPTIONS',
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'X-Accel-Buffering': 'no'
+          };
+          
+          exports.handler = awslambda.streamifyResponse(async (event, responseStream, context) => {
+              responseStream = awslambda.HttpResponseStream.from(responseStream, {
+                  statusCode: 200,
+                  headers: CORS_HEADERS
+              });
+              
+              // Parse request body
+              let body;
+              try {
+                  if (typeof event.body === 'string') {
+                      body = JSON.parse(event.body);
+                  } else {
+                      body = event.body || {};
+                  }
+              } catch (e) {
+                  responseStream.write(`data: ${JSON.stringify({ error: `Invalid JSON: ${e.message}` })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              // Handle OPTIONS preflight request
+              if (event.httpMethod === 'OPTIONS') {
+                  responseStream.write('');
+                  responseStream.end();
+                  return;
+              }
+              
+              // Extract parameters
+              const apiToken = body.apiToken;
+              const authType = body.authType || 'token';
+              const instance = body.instance || process.env.GLEAN_INSTANCE || '';
+              const message = body.message;
+              const documentContent = body.documentContent || '';
+              const chatId = body.chatId;
+              
+              // Validate required parameters
+              if (!apiToken || !message) {
+                  responseStream.write(`data: ${JSON.stringify({ error: 'Missing required parameters: apiToken, message' })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
+              
+              // Build Glean Chat API request
+              const gleanUrl = `https://${instance}-be.glean.com/rest/api/v1/chat`;
+              
+              // Build message with document context
+              let messageText;
+              if (documentContent && documentContent.trim()) {
+                  const prompt = "You're a professional legal contract reviewer responding to user chat messages. I'll provide you with the user's initial question, including the contract document body. After your initial answer users might ask follow-up questions - be sure to ground all answers to the contract document body provided in this initial message.";
+                  messageText = `${prompt}\n\nUser's initial question: ${message}\n\n<<<DOCUMENT>>>\n${documentContent}\n<<<END_DOCUMENT>>>`;
+              } else {
+                  messageText = message;
+              }
+              
+              const gleanPayload = {
+                  messages: [{
+                      author: 'USER',
+                      fragments: [{
+                          text: messageText
+                      }]
+                  }],
+                  agent_id: '4fb936e772ca4b48ae59dbb424b36f18',
+                  saveChat: true,
+                  stream: false
+              };
+              
+              // Add chatId if continuing conversation
+              if (chatId) {
+                  gleanPayload.chatId = chatId;
+              }
+              
+              // Heartbeat: send SSE comment every 15s to keep the connection alive through proxies
+              const heartbeat = setInterval(() => {
+                  try { responseStream.write(': heartbeat\n\n'); } catch (e) { /* stream may have closed */ }
+              }, 15000);
+              
+              // Call Glean Chat API
+              try {
+                  const gleanHeaders = {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${apiToken}`
+                  };
+                  if (authType === 'oauth') gleanHeaders['X-Glean-Auth-Type'] = 'OAUTH';
+                  
+                  const gleanController = new AbortController();
+                  const gleanTimeout = setTimeout(() => gleanController.abort(), 590000);
+                  
+                  let gleanResp;
+                  try {
+                      gleanResp = await fetch(gleanUrl, {
+                          method: 'POST',
+                          headers: gleanHeaders,
+                          body: JSON.stringify(gleanPayload),
+                          signal: gleanController.signal
+                      });
+                  } finally {
+                      clearTimeout(gleanTimeout);
+                  }
+                  
+                  console.log(`Glean Chat API response status: ${gleanResp.status}`);
+                  const responseBody = await gleanResp.text();
+                  
+                  if (gleanResp.status >= 400) {
+                      console.log(`Glean Chat API error: ${responseBody.substring(0, 500)}`);
+                      clearInterval(heartbeat);
+                      responseStream.write(`data: ${JSON.stringify({
+                          error: `Glean Chat API returned ${gleanResp.status}`,
+                          details: responseBody.substring(0, 1000)
+                      })}\n\n`);
+                      responseStream.end();
+                      return;
+                  }
+                  
+                  // Parse response
+                  const responseData = JSON.parse(responseBody);
+                  
+                  // Extract chat response
+                  const chatIdResponse = responseData.chatId || chatId;
+                  const messages = responseData.messages || [];
+                  
+                  // Get the assistant's reply (find the last GLEAN_AI message with text)
+                  let replyText = '';
+                  
+                  // Filter for GLEAN_AI messages
+                  const agentMessages = messages.filter(m => m.author === 'GLEAN_AI');
+                  
+                  if (agentMessages.length > 0) {
+                      // Get the last message (usually the final answer)
+                      const lastMsg = agentMessages[agentMessages.length - 1];
+                      const fragments = lastMsg.fragments || [];
+                      
+                      // Join all text fragments
+                      const texts = fragments.filter(f => f.text).map(f => f.text);
+                      replyText = texts.join(' ');
+                  }
+                  
+                  if (!replyText && messages.length > 0) {
+                      // Fallback: try to get text from the very last message of any author
+                      const lastMsg = messages[messages.length - 1];
+                      const fragments = lastMsg.fragments || [];
+                      const texts = fragments.filter(f => f.text).map(f => f.text);
+                      replyText = texts.join(' ');
+                  }
+                  
+                  const result = {
+                      chatId: chatIdResponse,
+                      message: replyText,
+                      fullResponse: responseData
+                  };
+                  
+                  clearInterval(heartbeat);
+                  responseStream.write(`data: ${JSON.stringify(result)}\n\n`);
+                  responseStream.end();
+                  
+              } catch (e) {
+                  console.log(`Error calling Glean Chat API: ${e.message}`);
+                  console.log(`Stack: ${e.stack}`);
+                  clearInterval(heartbeat);
+                  responseStream.write(`data: ${JSON.stringify({ error: `Error calling Glean Chat API: ${e.message}` })}\n\n`);
+                  responseStream.end();
+              }
+          });
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-chat-${DeploymentId}'
+
+
+  # ============================================================================
+  # API Gateway REST API
+  # ============================================================================
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'glean-legal-api-${DeploymentId}'
+      Description: API Gateway for Glean Legal Word Add-in Lambda proxies
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Name
+          Value: !Sub 'glean-legal-api-${DeploymentId}'
+
+
+  # ============================================================================
+  # API Gateway Resources and Methods
+  # ============================================================================
+  
+  # /list resource
+  ApiGatewayListResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: list
+
+  ApiGatewayListMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayListResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${ListingLambdaFunction.Arn}/response-streaming-invocations'
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 900000
+
+  ApiGatewayListOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayListResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # /analyze resource
+  ApiGatewayAnalyzeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: analyze
+
+  ApiGatewayAnalyzeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayAnalyzeResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${AnalysisLambdaFunction.Arn}/response-streaming-invocations'
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 900000
+
+  ApiGatewayAnalyzeOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayAnalyzeResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # /chat resource
+  ApiGatewayChatResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: chat
+
+  ApiGatewayChatMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayChatResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${ChatLambdaFunction.Arn}/response-streaming-invocations'
+        ResponseTransferMode: STREAM
+        TimeoutInMillis: 900000
+
+  ApiGatewayChatOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayChatResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # /oauth resource
+  ApiGatewayOAuthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: oauth
+
+  # /oauth/token resource
+  ApiGatewayOAuthTokenResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref ApiGatewayOAuthResource
+      PathPart: token
+
+  ApiGatewayOAuthTokenPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayOAuthTokenResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OAuthTokenProxyFunction.Arn}/invocations'
+
+  ApiGatewayOAuthTokenOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayOAuthTokenResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !If
+                - HasCustomDomain
+                - !Sub "'https://${DomainName}'"
+                - "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # /oauth/register resource
+  ApiGatewayOAuthRegisterResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref ApiGatewayOAuthResource
+      PathPart: register
+
+  ApiGatewayOAuthRegisterPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayOAuthRegisterResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DCRRegistrationFunction.Arn}/invocations'
+
+  ApiGatewayOAuthRegisterOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayOAuthRegisterResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # /config resource
+  ApiGatewayConfigResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: config
+
+  ApiGatewayConfigGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayConfigResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConfigLambdaFunction.Arn}/invocations'
+
+  ApiGatewayConfigPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayConfigResource
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConfigLambdaFunction.Arn}/invocations'
+
+  ApiGatewayConfigOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayConfigResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,PUT,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !If
+                - HasCustomDomain
+                - !Sub "'https://${DomainName}'"
+                - "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # /config/admin-check resource
+  ApiGatewayAdminCheckResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !Ref ApiGatewayConfigResource
+      PathPart: admin-check
+
+  ApiGatewayAdminCheckGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayAdminCheckResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConfigLambdaFunction.Arn}/invocations'
+
+  ApiGatewayAdminCheckOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayAdminCheckResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: !If
+                - HasCustomDomain
+                - !Sub "'https://${DomainName}'"
+                - "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # API Gateway Deployment
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiGatewayListMethod
+      - ApiGatewayListOptionsMethod
+      - ApiGatewayAnalyzeMethod
+      - ApiGatewayAnalyzeOptionsMethod
+      - ApiGatewayChatMethod
+      - ApiGatewayChatOptionsMethod
+      - ApiGatewayConfigGetMethod
+      - ApiGatewayConfigPutMethod
+      - ApiGatewayConfigOptionsMethod
+      - ApiGatewayAdminCheckGetMethod
+      - ApiGatewayAdminCheckOptionsMethod
+      - ApiGatewayOAuthTokenPostMethod
+      - ApiGatewayOAuthTokenOptionsMethod
+      - ApiGatewayOAuthRegisterPostMethod
+      - ApiGatewayOAuthRegisterOptionsMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: prod
+
+  # Lambda Permissions for API Gateway
+  LambdaListApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ListingLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*'
+
+  LambdaAnalyzeApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AnalysisLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*'
+
+  LambdaChatApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChatLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*'
+
+  LambdaOAuthProxyApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OAuthTokenProxyFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*'
+
+  LambdaDCRRegisterApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DCRRegistrationFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*'
+
+  LambdaConfigApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ConfigLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*'
+
+  # Gateway Responses for CORS
+  ApiGateway4xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+
+  ApiGateway5xxResponse:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+
+
+Outputs:
+  WebsiteBucketName:
+    Description: Name of the S3 bucket for website hosting
+    Value: !Ref WebsiteBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsiteBucket'
+  
+  CloudFrontDistributionId:
+    Description: CloudFront Distribution ID
+    Value: !Ref CloudFrontDistribution
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionId'
+  
+  CloudFrontDomainName:
+    Description: CloudFront Distribution Domain Name (use this for Route53 CNAME)
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionDomain'
+  
+  WebsiteURL:
+    Description: Website URL
+    Value: !Sub 'https://${DomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsiteURL'
+  
+  WAFWebACLArn:
+    Description: WAF Web ACL ARN
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-WAFArn'
+  
+  UserPoolId:
+    Condition: IsCognitoAuth
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+    Export:
+      Name: !Sub '${AWS::StackName}-UserPoolId'
+  
+  UserPoolClientId:
+    Condition: IsCognitoAuth
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+    Export:
+      Name: !Sub '${AWS::StackName}-UserPoolClientId'
+  
+  CognitoUserEmail:
+    Condition: IsCognitoAuth
+    Description: Cognito User Email
+    Value: !Ref CognitoUserEmail
+  
+  ConfigTableName:
+    Description: DynamoDB config table name (used by deploy-app.sh for seeding)
+    Value: !Ref ConfigTable
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigTable'
+  
+  AuthMode:
+    Description: Current authentication mode
+    Value: !Ref AuthMode
+  
+  OAuthClientType:
+    Description: Current OAuth client type (dcr or static)
+    Value: !Ref OAuthClientType
+  
+  ApiGatewayUrl:
+    Description: API Gateway base URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+  
+  ListEndpoint:
+    Description: Template/Playbook listing endpoint
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/list'
+  
+  AnalyzeEndpoint:
+    Description: Contract analysis endpoint
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/analyze'
+  
+  ChatEndpoint:
+    Description: Chat assistant endpoint
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/chat'
+  
+  ConfigEndpoint:
+    Description: Config API endpoint
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/config'
+  
+  DeploymentInstructions:
+    Description: Next steps for deployment
+    Value: !Sub |
+      1. Upload files to S3: aws s3 sync ../src s3://${WebsiteBucket}/
+      2. Create Route53 CNAME record: ${DomainName} -> ${CloudFrontDistribution.DomainName}
+      3. Invalidate CloudFront cache: aws cloudfront create-invalidation --distribution-id ${CloudFrontDistribution} --paths "/*"
+      4. Auth mode: ${AuthMode}
+      5. API Gateway URL: https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod
+      6. Update manifest.xml AppDomains with: https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com

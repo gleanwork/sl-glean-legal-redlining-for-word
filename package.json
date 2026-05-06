@@ -1,0 +1,39 @@
+{
+  "name": "glean-legal-contract-review",
+  "version": "1.0.0",
+  "description": "AI-powered contract review and analysis Office Add-in using Glean's intelligent agents",
+  "main": "src/taskpane/taskpane.js",
+  "scripts": {
+    "start": "npx office-addin-debugging start manifest.xml",
+    "validate": "office-addin-manifest validate manifest.xml",
+    "sideload": "office-addin-debugging start manifest.xml desktop",
+    "stop": "office-addin-debugging stop manifest.xml desktop",
+    "dev-certs": "office-addin-dev-certs install"
+  },
+  "keywords": [
+    "office-add-in",
+    "word",
+    "contract-review",
+    "legal",
+    "glean",
+    "ai"
+  ],
+  "author": "Glean Technologies",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "webpack": "^5.88.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^4.15.1",
+    "html-webpack-plugin": "^5.5.3",
+    "css-loader": "^6.8.1",
+    "style-loader": "^3.3.3",
+    "file-loader": "^6.2.0",
+    "office-addin-debugging": "^5.0.0",
+    "office-addin-dev-certs": "^1.11.3",
+    "office-addin-manifest": "^1.12.3"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

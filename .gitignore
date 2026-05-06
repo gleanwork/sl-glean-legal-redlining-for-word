@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build output
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+deployment/config/prod.env
+deployment/config/dev.env
+
+# Generated configuration files (created from templates during deployment)
+src/config/api.js
+src/config/glean-defaults.js
+src/taskpane/login.js
+src/taskpane/auth.js
+manifest.xml
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Office Add-in
+*.OfficeAddin
+
+# Certificates
+certs/
+*.pem
+*.key
+*.crt
+
+# Temporary files
+tmp/
+temp/
+temporary/
+*.tmp
+
+# Deployment outputs
+deployment/.stack-outputs
