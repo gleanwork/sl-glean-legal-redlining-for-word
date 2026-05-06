@@ -4,7 +4,7 @@ Description: 'Glean Legal Word Add-in with Cognito Authentication, CloudFront, S
 Parameters:
   DomainName:
     Type: String
-    Description: Domain name for the Word Add-in (e.g., wordredlining.gleandemo.com)
+    Description: Domain name for the Word Add-in (e.g., wordredlining.example.com)
     Default: ""
   
   CertificateArn:
