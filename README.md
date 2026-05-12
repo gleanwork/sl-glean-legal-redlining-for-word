@@ -10,6 +10,8 @@ Glean Legal Redlining for Word brings contract review into Microsoft Word. Users
 
 The recommended production deployment uses **Glean SSO with OAuth2 PKCE and Dynamic Client Registration (DCR)**. In this mode, users click **Sign in with Glean** and authenticate through their organization's Glean login. Users do **not** need to paste a personal Glean API token.
 
+This repository is a customer-deployable example. AI-generated redline suggestions are review assistance only and must be reviewed by qualified users before they are applied to legal documents. This example is not legal advice.
+
 ## Key Features
 
 - **Playbook Review**: Analyze a full document or selected text against configurable templates and playbooks.
