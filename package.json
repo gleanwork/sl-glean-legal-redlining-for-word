@@ -38,7 +38,7 @@
     "webpack-dev-server": "^4.15.1",
     "html-webpack-plugin": "^5.5.3",
     "css-loader": "^6.8.1",
-    "style-loader": "^3.3.3",
+    "style-loader": "^4.0.0",
     "file-loader": "^6.2.0",
     "office-addin-debugging": "^5.0.0",
     "office-addin-dev-certs": "^1.11.3",
