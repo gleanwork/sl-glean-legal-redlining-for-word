@@ -1,9 +1,10 @@
 {
-  "name": "glean-legal-contract-review",
+  "name": "sl-glean-legal-redlining-for-word",
   "version": "1.0.0",
-  "description": "AI-powered contract review and analysis Office Add-in using Glean's intelligent agents",
+  "description": "Customer-deployable Microsoft Word redlining add-in example powered by Glean Agents and AWS.",
   "main": "src/taskpane/taskpane.js",
   "scripts": {
+    "check": "node scripts/check-public-readiness.mjs",
     "start": "npx office-addin-debugging start manifest.xml",
     "validate": "office-addin-manifest validate manifest.xml",
     "sideload": "office-addin-debugging start manifest.xml desktop",
@@ -16,10 +17,20 @@
     "contract-review",
     "legal",
     "glean",
-    "ai"
+    "ai",
+    "solutions-library",
+    "aws"
   ],
-  "author": "Glean Technologies",
+  "author": "Glean",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gleanwork/sl-glean-legal-redlining-for-word.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gleanwork/sl-glean-legal-redlining-for-word/issues"
+  },
+  "homepage": "https://github.com/gleanwork/sl-glean-legal-redlining-for-word#readme",
   "dependencies": {},
   "devDependencies": {
     "webpack": "^5.88.0",
