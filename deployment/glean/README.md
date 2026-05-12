@@ -24,7 +24,7 @@ This folder contains template files and agent instructions for the three Glean a
 1. **Review each template file** - They contain placeholder configurations and setup instructions
 2. **Create agents in your Glean instance** - Follow the step-by-step instructions in each template
 3. **Export your actual agent configurations** - Replace these templates with your real configs (optional)
-4. **Copy the Agent IDs** - You'll need these for configuring the Word Add-in
+4. **Copy the Agent IDs** - You'll need these for `prod.env` and/or the add-in admin settings
 
 ## Auto Mode Agent Instructions
 
@@ -56,6 +56,7 @@ Versioned instruction sets — use the latest (`v4`):
 - These are **template files** — you must create the actual agents in your Glean instance
 - The **Listing Agent template** contains `REDACTED_URL` placeholders in its `instructionTemplate` fields. You must replace these with URLs pointing to your own document source folders (Google Drive, SharePoint, etc.) where your contract templates and playbooks are stored.
 - Each template includes detailed setup instructions
-- After creating agents, note the Agent IDs for use in the Word Add-in Settings screen or `prod.env`
+- After creating agents, note the Agent IDs for use in `prod.env` and/or the Word Add-in admin settings.
+- In the recommended SSO/DCR deployment path, users sign in with Glean and do not need personal Glean API tokens. API-token setup only applies to the optional Cognito demo/POC mode.
 - The actual agent configurations are managed in the Glean platform
 - These files are for reference and documentation purposes

@@ -1,154 +1,155 @@
-# Glean Legal Contract Review - Word Add-in
+# Glean Legal Redlining for Word
 
-AI-powered contract review and analysis for Microsoft Word using Glean's intelligent agents.
-
----
-
-## Overview
-
-The Glean Legal Contract Review Add-in brings AI-powered contract analysis directly into Microsoft Word. Review contracts with customizable playbooks, get intelligent recommendations, and chat with your documents using Glean's advanced AI agents.
+AI-powered contract review and redlining for Microsoft Word, backed by Glean Agents and deployable on AWS.
 
 ![Add-in Home Screen](assets/screenshots/new-add-in-main-screen.png)
 
-### Key Features
+## Overview
 
-- **📋 Playbook Review**: Analyze contracts using customizable templates and playbooks
-- **💬 Chat with Document**: Ask questions about your contract and get AI-powered answers
-- **✨ AI Recommendations**: Get intelligent redline suggestions with detailed reasoning
-- **🎯 Flexible Analysis**: Review entire documents or selected text
-- **📝 Custom Templates & Playbooks**: Provide your own templates/playbooks via URL or text
-- **🔄 Track Changes**: All modifications applied with Word's native track changes
-- **☁️ Production Ready**: Full AWS serverless infrastructure
+Glean Legal Redlining for Word brings contract review into Microsoft Word. Users can review a full document or a selected excerpt against templates and playbooks, receive structured redline recommendations, ask document-grounded questions, and apply accepted recommendations with Word Track Changes.
 
----
+The recommended production deployment uses **Glean SSO with OAuth2 PKCE and Dynamic Client Registration (DCR)**. In this mode, users click **Sign in with Glean** and authenticate through their organization's Glean login. Users do **not** need to paste a personal Glean API token.
+
+## Key Features
+
+- **Playbook Review**: Analyze a full document or selected text against configurable templates and playbooks.
+- **AI Redline Recommendations**: Receive structured replace, insert, delete, and missing-clause recommendations.
+- **Track Changes Application**: Apply selected recommendations back into Word using native Track Changes.
+- **Chat With Contract**: Ask questions grounded in the current document text.
+- **Template and Playbook Picker**: Retrieve available templates and playbooks through a Glean Listing Agent.
+- **Admin Defaults**: Manage organization-wide defaults, agent IDs, and admin users through DynamoDB-backed configuration.
+- **AWS Deployment**: Host the Office Add-in and API proxy layer on AWS serverless infrastructure.
+
+## Recommended Production Setup
+
+For customer deployments, use:
+
+- Microsoft Word Add-in hosted from S3 and CloudFront.
+- API Gateway + Lambda proxy endpoints for Glean agent, chat, OAuth, and config calls.
+- Glean OAuth SSO with `AUTH_MODE=sso`.
+- Dynamic Client Registration with `OAUTH_CLIENT_TYPE=dcr`.
+- Three Glean Agents:
+  - Redliner Agent
+  - Chat Agent
+  - Template & Playbook Listing Agent
+- No per-user Glean API token.
+
+Optional Cognito username/password authentication remains supported for demos, POCs, or isolated test environments. In Cognito mode only, users must provide a Glean API token with the required permissions.
 
 ## Architecture
 
 ![Architecture Diagram](assets/screenshots/architecture-diagram.png)
 
-The Glean Legal Contract Review Add-in integrates Microsoft Office 365 Word with Glean's AI platform through a serverless AWS infrastructure:
+```text
+Microsoft Word Add-in
+    ↓
+CloudFront + S3 static hosting
+    ↓
+API Gateway
+    ↓
+Lambda proxy functions
+├── /list    → Glean Template & Playbook Listing Agent
+├── /analyze → Glean Contract Redlining Agent
+├── /chat    → Glean Chat API
+├── /config  → DynamoDB-backed org config
+└── /oauth   → Glean OAuth token / DCR helper endpoints
+    ↓
+Glean Platform
+```
 
-- **Frontend**: Office 365 Word Add-in with hosted web elements (HTML/JS/CSS)
-- **Authentication**: Dual-mode — Amazon Cognito (username/password) or Glean SSO (OAuth2 PKCE)
-- **Admin Config**: DynamoDB-backed org config with admin page for managing settings
-- **Infrastructure**: AWS serverless stack (API Gateway, Lambda, S3, CloudFront, CDN)
-- **AI Engine**: Glean platform with specialized agents for contract analysis
-- **Data Sources**: Enterprise connectors (120+ sources) including Box, GitHub, SharePoint, Google Drive, etc.
+### Components
 
----
+- **Frontend**: Office.js taskpane app using vanilla JavaScript, HTML, and CSS.
+- **Authentication**: Recommended Glean OAuth SSO (PKCE + DCR); optional Cognito mode for demos/POCs.
+- **Backend**: AWS Lambda functions behind API Gateway.
+- **Hosting**: S3 private bucket served through CloudFront.
+- **Configuration**: DynamoDB config table for org defaults and admin-managed settings.
+- **Security**: CloudFront, WAF, private S3 bucket with OAC, HTTPS, PKCE, OAuth state validation, and optional Cognito resources.
+- **Glean**: Agents API, Chat API, and OAuth endpoints.
 
 ## Prerequisites
 
-Before you begin, ensure you have:
+Before deploying, have the following ready:
 
-- **AWS Account** with administrative access
-- **AWS CLI** installed and configured
-- **Glean Instance** with administrative access
-- **Custom Domain Name** that you control
-- **Bash/Zsh shell** (macOS/Linux natively; Windows users need WSL or Git Bash)
-- **Node.js 16+** (for local development only)
+- AWS account with permission to deploy CloudFormation, Lambda, API Gateway, CloudFront, S3, DynamoDB, IAM, WAF, and ACM resources.
+- AWS CLI configured with a deployer profile.
+- A custom domain you control.
+- ACM certificate for the domain in `us-east-1` (required by CloudFront custom domains).
+- Glean instance with access to create and configure agents.
+- Microsoft 365 tenant or Word environment where you can centrally deploy or sideload a custom Word Add-in.
+- Bash or zsh shell.
+- Node.js 16+ for local Office Add-in development tooling only.
 
----
+## Quick Start
 
-## Quick Start Guide
+1. Create the three Glean Agents from `deployment/glean/agents/`.
+2. Copy `deployment/config/prod.env.example` to `deployment/config/prod.env`.
+3. Configure `prod.env` for AWS, domain, Glean instance, admin emails, and agent IDs.
+4. Use `AUTH_MODE=sso` and `OAUTH_CLIENT_TYPE=dcr` for the recommended production setup.
+5. Deploy infrastructure:
 
-### Part 1: Set Up Glean Agents (~15 minutes)
-1. Create 3 agents in your Glean instance using the provided templates
-2. Note the Agent IDs for each agent
-3. Get your Glean API token (Cognito mode only — SSO handles this automatically)
+   ```bash
+   ./deployment/scripts/deploy-infrastructure.sh prod
+   ```
 
-### Part 2: Deploy AWS Infrastructure (~20 minutes)
-1. Create ACM certificate in us-east-1
-2. Configure deployment settings in prod.env
-3. Deploy CloudFormation stack
-4. Configure DNS
+6. Create the DNS CNAME from your custom domain to the CloudFront distribution.
+7. Deploy app files and generated config:
 
-### Part 3: Deploy & Install (~10 minutes)
-1. Deploy application files to S3 (auto-generates configs)
-2. Upload manifest to Word
-3. Configure Glean settings in the add-in
-4. Test the features
+   ```bash
+   ./deployment/scripts/deploy-app.sh prod
+   ```
 
-**Total Time: ~45 minutes**
+8. Install the generated `manifest.xml` in Microsoft Word through centralized deployment or sideloading.
+9. Open the add-in, click **Sign in with Glean**, and test template listing, redlining, chat, and Track Changes.
 
----
+Estimated setup time from the original deployment guide is about 45 minutes, excluding any customer-specific security review or DNS propagation delays.
 
-## Detailed Deployment Guide
+## Step 1: Set Up Glean Agents
 
-### Step 1: Set Up Glean Agents
+Create three agents in your Glean instance using the templates and instructions in `deployment/glean/agents/`.
 
-You need to create 3 agents in your Glean instance. Templates are provided in `deployment/glean/agents/`.
+### 1.1 Chat Agent
 
-#### 1.1 Create Chat Agent
+1. Log into your Glean instance.
+2. Navigate to **Agents** and create a new agent.
+3. Use `deployment/glean/agents/chat-agent-template.json` or `deployment/glean/agents/chat-automode-instruction.md`.
+4. Configure it as a legal Q&A assistant grounded in contract text.
+5. Copy the Agent ID for `CHAT_AGENT_ID`.
 
-1. Log into your Glean instance
-2. Navigate to **Agents** → **Create New Agent**
-3. Name: `Legal Chat Assistant`
-4. Review the template: `deployment/glean/agents/chat-agent-template.json`
-5. Configure the agent with prompts for legal Q&A
-6. Test with sample contracts
-7. **Copy the Agent ID** (format: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`)
+### 1.2 Redliner Agent
 
-#### 1.2 Create Redliner Agent
+1. Create a new agent in Glean.
+2. Use `deployment/glean/agents/redliner-agent-template.json` or the latest versioned instruction file (`redliner-automode-instruction-v4.md`).
+3. Configure the agent to return XML changes with supported change types (`replace`, `insert`, `delete`, `insertClause`).
+4. Test with a representative contract, template, and playbook.
+5. Copy the Agent ID for `REDLINER_AGENT_ID`.
 
-1. Create a new agent in Glean
-2. Name: `Contract Redlining Agent`
-3. Review the template: `deployment/glean/agents/redliner-agent-template.json`
-4. Configure with contract analysis prompts
-5. Set output format to XML
-6. Define input fields: Contract Text, Template Link, Playbook Link
-7. Test with sample contracts
-8. **Copy the Agent ID**
+### 1.3 Template & Playbook Listing Agent
 
-#### 1.3 Create Listing Agent
+1. Create a new agent in Glean.
+2. Use `deployment/glean/agents/listing-agent-template.json` or `deployment/glean/agents/listing-automode-instruction.md`.
+3. Configure the template and playbook source folders.
+4. Ensure the agent has access to read the relevant document source.
+5. Copy the Agent ID for `LISTING_AGENT_ID`.
 
-1. Create a new agent in Glean
-2. Name: `Template & Playbook Listing Agent`
-3. Review the template: `deployment/glean/agents/listing-agent-template.json`
-4. Connect to your document sources (Google Drive, SharePoint, etc.)
-5. Configure search parameters
-6. Test to ensure it returns documents
-7. **Copy the Agent ID**
+## Step 2: Create AWS Certificate
 
-#### 1.4 Get Glean API Token (Cognito mode only)
+CloudFront requires custom-domain ACM certificates in `us-east-1`.
 
-> **SSO mode**: Skip this step. In SSO mode, the OAuth access token serves as the API token — users authenticate via their organization's SSO and tokens are obtained automatically.
+1. Open AWS Certificate Manager in `us-east-1`.
+2. Request a public certificate for your add-in domain, for example `redlining.example.com`.
+3. Complete DNS or email validation.
+4. Copy the certificate ARN for `CERTIFICATE_ARN`.
 
-1. In your Glean instance, go to **Settings** → **API**
-2. Click **Generate New Token** or use an existing token
-3. **Important**: Ensure the token has the following permissions:
-   - ✅ **Agents** - Required for calling Glean agents
-   - ✅ **Chat** - Required for chat functionality
-4. **Copy and save this token** - you'll need it later for the Word Add-in Settings
+## Step 3: Configure `prod.env`
 
----
-
-### Step 2: Create AWS Certificate
-
-1. Open AWS Console and navigate to **Certificate Manager**
-2. **Important**: Switch to **us-east-1** region (required for CloudFront)
-3. Click **Request a certificate**
-4. Choose **Request a public certificate**
-5. Enter your domain name (e.g., `gleanredlining.yourdomain.com`)
-6. Choose validation method (DNS or Email)
-7. Complete validation
-8. **Copy the Certificate ARN** (format: `arn:aws:acm:us-east-1:...`)
-
----
-
-### Step 3: Configure Deployment Settings
-
-#### 3.1 Create prod.env file
-
-From the project root:
+Create your environment file:
 
 ```bash
 cp deployment/config/prod.env.example deployment/config/prod.env
 ```
 
-#### 3.2 Edit prod.env
-
-Open `deployment/config/prod.env` and fill in your values:
+For production SSO/DCR, configure:
 
 ```bash
 # AWS Configuration
@@ -160,520 +161,365 @@ STACK_NAME=glean-legal-addin
 DEPLOYMENT_ID=prod
 
 # Domain and Certificate
-DOMAIN_NAME=gleanredlining.yourdomain.com
-CERTIFICATE_ARN=arn:aws:acm:us-east-1:123456789:certificate/abc-123-def
+DOMAIN_NAME=redlining.example.com
+CERTIFICATE_ARN=arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/CERTIFICATE_ID
 
-# Authentication Mode: "cognito" or "sso"
-AUTH_MODE=cognito
+# Recommended production authentication
+AUTH_MODE=sso
+OAUTH_CLIENT_TYPE=dcr
 
-# SSO Configuration (only used when AUTH_MODE=sso)
+# DCR mode does not require a static OAuth client ID or secret.
 GLEAN_OAUTH_CLIENT_ID=
 GLEAN_OAUTH_CLIENT_SECRET=
 
-# Admin Configuration (comma-separated, for initial DynamoDB seeding)
-ADMIN_EMAILS=admin@yourdomain.com
+# Admin Configuration
+ADMIN_EMAILS=admin@example.com
 
-# Cognito User (only used when AUTH_MODE=cognito)
-COGNITO_USER_EMAIL=admin@yourdomain.com
-COGNITO_USER_PASSWORD=YourSecurePassword123!
-
-# Glean Configuration (injected as defaults in the add-in)
+# Glean Configuration
 GLEAN_INSTANCE=your-instance-name
 CHAT_AGENT_ID=your-chat-agent-id
 REDLINER_AGENT_ID=your-redliner-agent-id
 LISTING_AGENT_ID=your-listing-agent-id
 ```
 
-#### 3.3 Choose Authentication Mode
+### Authentication Modes
 
-The add-in supports two authentication modes:
+#### Recommended: Glean SSO with DCR
 
-**Cognito mode** (`AUTH_MODE=cognito`) — Simple username/password:
-- Good for demos, POCs, and small teams
-- Users sign in with Cognito credentials
-- No IT/SSO integration required
-- Set `COGNITO_USER_EMAIL` and `COGNITO_USER_PASSWORD`
-
-**SSO mode** (`AUTH_MODE=sso`) — Glean OAuth2 PKCE:
-- Recommended for production deployments
-- Users sign in via their organization's SSO through Glean
-- Requires OAuth client registration in Glean admin console
-- See [SSO Setup Guide](#sso-setup-guide) below
-
-**Cognito Password Requirements:**
-- Minimum 8 characters
-- At least one uppercase letter
-- At least one lowercase letter
-- At least one number
-- At least one special character
-
----
-
-### Step 4: Deploy AWS Infrastructure
-
-From the project root:
-
-```bash
-./deployment/scripts/deploy-infrastructure.sh prod
-```
-
-**What happens:**
-- Creates S3 bucket for static hosting
-- Deploys CloudFront distribution with Lambda@Edge authentication
-- Creates Cognito User Pool with your admin user (cognito mode)
-- Creates DynamoDB config table with admin emails
-- Deploys 3 business Lambda functions (list, analyze, chat)
-- Deploys config Lambda and OAuth token proxy Lambda (sso mode)
-- Creates API Gateway with endpoints
-- Configures WAF for security
-
-**Wait time:** 10-15 minutes
-
-**Note:** The deployment outputs (API Gateway URL, CloudFront domain) will be automatically used by the deployment script in the next step.
-
----
-
-### Step 5: Configure DNS
-
-Create a CNAME record in your DNS provider (Route53, Cloudflare, etc.):
-
-- **Type**: CNAME
-- **Name**: `gleanredlining.yourdomain.com` (your domain)
-- **Value**: `d1234567890abc.cloudfront.net` (CloudFront domain from Step 4 output)
-- **TTL**: 300
-
-The CloudFront domain is printed at the end of the Step 4 script output and saved to `deployment/.stack-outputs`.
-
-**Wait 5-10 minutes** for DNS propagation.
-
----
-
-### Step 6: Deploy Application Files
-
-From the project root:
-
-```bash
-./deployment/scripts/deploy-app.sh prod
-```
-
-**What happens:**
-- **Generates `src/config/api.js`** from template using CloudFormation outputs
-- **Generates `src/taskpane/login.js`** from template (Cognito IDs in cognito mode, placeholders in SSO mode)
-- **Generates `src/taskpane/auth.js`** from template (dual-mode auth middleware)
-- **Generates `src/config/glean-defaults.js`** from template with auth mode, Glean instance, and agent IDs
-- **Generates `manifest.xml`** from template using your domain, API Gateway URL, and Glean instance
-- Syncs files from `src/` to S3
-- **Uploads `manifest.xml`** to S3 root for public hosting
-- Sets correct content-types and cache headers
-- Seeds/syncs DynamoDB config (auth mode, OAuth client ID, admin emails)
-- Creates CloudFront invalidation
-- Verifies deployment
-
-**Wait time:** 2-3 minutes
-
-**Important:** This script automatically configures your application - no manual editing required!
-
----
-
-### Step 7: Install in Microsoft Word
-
-There are two ways to install the add-in: **centralized deployment** (recommended for production) or **manual sideloading** (for development/testing).
-
-#### 7.1 Option A: Centralized Deployment (Production)
-
-Deploy the add-in to users via the Microsoft 365 Admin Center. This is the recommended approach for production — IT deploys once, and users get the add-in automatically.
-
-1. Sign in to [admin.microsoft.com](https://admin.microsoft.com) as a Microsoft 365 admin
-2. Navigate to **Settings** → **Integrated apps**
-3. Click **Upload custom apps**
-4. Select **"Provide a URL to the manifest file"**
-5. Enter your manifest URL: `https://<your-domain>/manifest.xml`
-6. Assign to **specific users or security groups**
-7. Click **Deploy**
-
-The manifest URL is persistent — future `deploy-app.sh` runs automatically update it. IT only needs to do this once. Add-ins may take up to 24 hours to appear for newly assigned users.
-
-#### 7.1 Option B: Manual Sideloading (Development)
-
-1. Open Microsoft Word
-2. Go to **Insert** → **Get Add-ins**
-3. Click **My Add-ins** tab
-4. Click **Upload My Add-in**
-
-   ![Office Add-ins Upload Screen](assets/screenshots/office-addins-upload.png)
-
-5. Browse to `manifest.xml` in your project folder
-6. Click **Upload**
-
-   ![Manifest Upload Dialog](assets/screenshots/manifest-upload-dialog.png)
-
-#### 7.2 Test the Add-in
-
-1. The add-in should appear in the Word ribbon
-2. Click the add-in button to open the task pane
-3. You'll be prompted to sign in:
-
-   ![SSO Login Screen](assets/screenshots/add-in-sso-screen.png)
-
-   - **Cognito mode**: Enter your `COGNITO_USER_EMAIL` and `COGNITO_USER_PASSWORD` from Step 3
-   - **SSO mode**: Click **"Sign in with Glean"** — a dialog opens with your organization's SSO login. After authentication, the dialog closes and you're redirected to the app.
-4. After login, you'll see the home screen:
-
-   ![Home Screen](assets/screenshots/new-add-in-main-screen.png)
-
----
-
-### Step 8: Configure Settings
-
-> **SSO mode**: Skip directly to Step 8.3 — authentication is handled automatically via OAuth and no API token is needed. All settings are pre-filled from your deployment configuration.
-
-#### 8.1 Open Settings
-
-1. Click the **⚙️ Settings** icon in the top-right corner of the add-in
-2. You'll see the Settings screen with Glean Configuration fields
-3. **Note:** Instance and Agent IDs are pre-filled from your deployment configuration
-
-#### 8.2 Enter Your API Token (Cognito mode only)
-
-![Settings Configuration](assets/screenshots/settings-configuration.png)
-
-1. **API Token** (Cognito mode only — required for API access)
-   - Paste your Glean API token from Step 1.4
-   - This token must have **Agents** and **Chat** permissions
-
-2. **Instance** (pre-filled)
-   - Already set from `GLEAN_INSTANCE` in your `prod.env`
-   - Can be overridden if needed
-
-3. **Chat Agent ID** (pre-filled)
-   - Already set from `CHAT_AGENT_ID` in your `prod.env`
-
-4. **Redliner Agent ID** (pre-filled)
-   - Already set from `REDLINER_AGENT_ID` in your `prod.env`
-
-5. **Listing Agent ID** (pre-filled)
-   - Already set from `LISTING_AGENT_ID` in your `prod.env`
-
-#### 8.3 Save Configuration
-
-1. Click **Save Changes**
-2. The settings will be saved to your Word document
-3. You're now ready to use the add-in!
-
-#### 8.4 Test the Features
-
-1. **Playbook Review**: Click **Contract Review** on the home screen to open the review setup. Select your scope, template, and playbook, then click **Start Analysis**.
-
-   ![Review Setup](assets/screenshots/new-add-in-review-setup-screen.png)
-
-   The add-in sends your contract to Glean AI for analysis. This typically takes 3–5 minutes.
-
-   ![Analyzing with Glean AI](assets/screenshots/new-add-in-analyzing-with-glean-screen.png)
-
-2. **Chat**: Click **Chat with Contract** to ask questions about your document and get AI-powered answers.
-
----
-
-## Architecture Details
-
-```
-Word Add-in (Frontend)
-    ↓
-CloudFront CDN + Lambda@Edge Auth
-    ↓
-S3 Static Hosting
-    ↓
-API Gateway (AWS)
-    ↓
-Lambda Functions (3)
-├── /list → Template & Playbook Lister Agent
-├── /analyze → Contract Redlining Agent  
-└── /chat → Legal Chat Assistant Agent
-    ↓
-Glean AI Platform
-```
-
-### Tech Stack
-
-**Frontend:**
-- Vanilla JavaScript (ES Modules)
-- HTML5 + CSS3
-- Office.js API
-- Source file deployment (no webpack)
-
-**Backend:**
-- AWS Lambda (Python 3.11, Node.js 20.x)
-- API Gateway (REST API)
-- CloudFront CDN
-- Lambda@Edge (Authentication)
-- Cognito (User Management — cognito mode) or Glean OAuth SSO (sso mode)
-- DynamoDB (Configuration Storage)
-- S3 (Static Hosting)
-- WAF (Security)
-
-**AI Integration:**
-- Glean AI Platform
-- 3 Custom Agents
-- XML response parsing
-
----
-
-## Local Development
-
-This project uses source-file deployment (no build step). For local development:
-
-```bash
-# Install dependencies (for dev tools only)
-npm install
-
-# Generate dev certificates (required for HTTPS)
-npm run dev-certs
-
-# Validate your manifest
-npm run validate
-
-# Sideload add-in in Word Desktop
-npm run sideload
-```
-
-**Note:** The project deploys source files directly to S3 — there is no webpack build for production. The `src/` directory is what gets deployed. Generated config files (`api.js`, `login.js`, `auth.js`, `glean-defaults.js`, `manifest.xml`) are created by `deploy-app.sh` and are gitignored.
-
----
-
-## Updating the Application
-
-### Deploy Frontend Changes
-
-From the project root:
-
-```bash
-./deployment/scripts/deploy-app.sh prod
-```
-
-Use this when you modify files in `src/`.
-
-### Deploy Infrastructure Changes
-
-From the project root:
-
-```bash
-./deployment/scripts/deploy-infrastructure.sh prod
-```
-
-Use this when you modify `deployment/cloudformation.yaml`.
-
-**Note:** Infrastructure changes are rare. Most updates only require `deploy-app.sh`.
-
-**API Gateway:** The script automatically redeploys the API Gateway stage after stack updates, ensuring changes to Lambda integrations and timeouts take effect immediately.
-
-### Team Handoff
-
-The `prod.env` file is **gitignored** and not stored in the repository. If a new team member needs to deploy:
-
-1. Copy the example: `cp deployment/config/prod.env.example deployment/config/prod.env`
-2. Fill in the values — you'll need:
-   - **AWS_PROFILE**: Your configured AWS CLI profile with access to the account
-   - **DOMAIN_NAME** and **CERTIFICATE_ARN**: From the original deployment (check Route53/ACM in AWS Console)
-   - **AUTH_MODE**: `cognito` or `sso` (check with the original deployer)
-   - **Cognito mode**: `COGNITO_USER_EMAIL` / `COGNITO_USER_PASSWORD` (the admin credentials)
-   - **SSO mode**: `GLEAN_OAUTH_CLIENT_ID` / `GLEAN_OAUTH_CLIENT_SECRET` (from Glean admin console)
-   - **GLEAN_INSTANCE** and **Agent IDs**: From your Glean admin console
-3. Infrastructure values (S3 bucket, CloudFront distribution, API Gateway URL) are automatically pulled from CloudFormation outputs — you do **not** need to fill these in.
-
----
-
-## Troubleshooting
-
-### Add-in doesn't load
-- Verify manifest.xml URLs match your domain
-- Check CloudFront distribution status (should be "Deployed")
-- Check browser console for errors
-- Verify DNS is propagated: `nslookup your-domain.example.com`
-
-### Authentication fails
-- **Cognito mode**: Verify Cognito credentials are correct
-- **SSO mode**: Verify OAuth Client ID is correct and redirect URI matches exactly
-- **SSO mode**: Check that required scopes are granted: `agents chat search`
-- Check Lambda@Edge logs in CloudWatch (in the region closest to you)
-- Ensure password meets requirements (Cognito mode)
-
-### SSO login popup doesn't open
-- Ensure pop-ups are not blocked in your browser
-- In Word Desktop, the Office Dialog API handles the popup — check Office.js console logs
-- Verify `oauth-dialog.html` is accessible at `https://<your-domain>/taskpane/oauth-dialog.html`
-
-### SSO token refresh fails
-- Check browser console for `[OAUTH]` log messages
-- Verify the required scopes (`agents chat search`) were granted during client registration
-- The refresh has a 60-second minimum interval and exponential backoff
-- After 5 consecutive failures, the user is prompted to re-authenticate
-
-### API calls fail
-- Verify API Gateway URL in `src/config/api.js`
-- Check Glean API token in Settings screen
-- Review Lambda function logs in CloudWatch
-- Verify agent IDs are correct in the Settings screen
-
-### Changes don't apply
-- Ensure track changes is enabled in Word
-- Check console logs for parsing errors
-- Verify XML response format from Glean agent
-
-### CloudFormation deployment fails
-- Check you're using us-east-1 region
-- Verify ACM certificate exists and is validated
-- Check AWS CLI credentials have sufficient permissions
-- Review CloudFormation events in AWS Console
-
----
-
-## SSO Setup Guide
-
-To use SSO mode (`AUTH_MODE=sso`), follow these steps:
-
-### 1. Register OAuth Client in Glean
-
-1. Log into your Glean admin console
-2. Navigate to **Settings** → **Third-party access (OAuth)**
-3. Click **Register new client**
-4. Set **Redirect URI** to: `https://<your-domain>/taskpane/oauth-callback.html`
-5. Request scopes: `agents chat search`
-6. **Copy the Client ID and Client Secret**
-
-### 2. Configure prod.env
+Use this for production deployments:
 
 ```bash
 AUTH_MODE=sso
-GLEAN_OAUTH_CLIENT_ID=your-client-id-from-step-1
-GLEAN_OAUTH_CLIENT_SECRET=your-client-secret-from-step-1
-ADMIN_EMAILS=admin@yourcompany.com
+OAUTH_CLIENT_TYPE=dcr
+GLEAN_OAUTH_CLIENT_ID=
+GLEAN_OAUTH_CLIENT_SECRET=
 ```
 
-### 3. Deploy
+In this mode:
+
+- Users click **Sign in with Glean**.
+- The add-in uses OAuth2 PKCE.
+- The first login registers a public OAuth client through the DCR Lambda if one is not already cached.
+- The OAuth access token is used for Glean Agents and Chat calls.
+- Users do not enter a Glean API token.
+
+#### Optional: SSO with Static OAuth Client
+
+Use this only if your environment requires a pre-registered OAuth client:
+
+```bash
+AUTH_MODE=sso
+OAUTH_CLIENT_TYPE=static
+GLEAN_OAUTH_CLIENT_ID=your-client-id
+GLEAN_OAUTH_CLIENT_SECRET=your-client-secret
+```
+
+Register the client in Glean Admin Console with redirect URI:
+
+```text
+https://<your-domain>/taskpane/oauth-callback.html
+```
+
+Requested scopes:
+
+```text
+agents chat search
+```
+
+#### Optional: Cognito Demo/POC Mode
+
+Cognito mode remains available for demos, POCs, and isolated testing:
+
+```bash
+AUTH_MODE=cognito
+COGNITO_USER_EMAIL=admin@example.com
+COGNITO_USER_PASSWORD=ChangeMe123!@#
+```
+
+In Cognito mode, users sign in with Cognito credentials and must provide a Glean API token in the add-in settings. The API token must have access to the required Glean capabilities, including agents and chat.
+
+## Step 4: Deploy AWS Infrastructure
+
+From the project root:
+
+```bash
+./deployment/scripts/deploy-infrastructure.sh prod
+```
+
+The script loads `deployment/config/prod.env`, then creates or updates the CloudFormation stack.
+
+Infrastructure includes:
+
+- S3 bucket for private static hosting.
+- CloudFront distribution and Origin Access Control.
+- Lambda@Edge request handler.
+- WAF rules and rate limiting.
+- API Gateway REST API.
+- Lambda proxy functions for listing, analysis, chat, config, OAuth token exchange, and DCR registration.
+- DynamoDB config table.
+- Cognito resources only when `AUTH_MODE=cognito`.
+
+The infrastructure deployment can take 10-15 minutes.
+
+## Step 5: Configure DNS
+
+Create a CNAME record in your DNS provider:
+
+- **Name**: your add-in subdomain, for example `redlining.example.com`
+- **Value**: the CloudFront distribution domain printed by the infrastructure deployment
+- **TTL**: 300 seconds or your organization's standard value
+
+Wait for DNS propagation before installing the manifest through Microsoft 365.
+
+## Step 6: Deploy Application Files
+
+From the project root:
+
+```bash
+./deployment/scripts/deploy-app.sh prod
+```
+
+This script:
+
+- Generates `src/config/api.js` from CloudFormation outputs.
+- Generates `src/taskpane/login.js` and `src/taskpane/auth.js`.
+- Generates `src/config/glean-defaults.js` with auth mode, OAuth client type, Glean instance, and agent IDs.
+- Generates `manifest.xml` from `manifest.xml.example`.
+- Seeds or syncs DynamoDB org configuration.
+- Syncs app files from `src/` to S3.
+- Uploads `manifest.xml` to the S3 root.
+- Creates a CloudFront invalidation.
+
+The app deploy usually takes 2-3 minutes.
+
+## Step 7: Install in Microsoft Word
+
+There are two installation paths.
+
+### Option A: Centralized Deployment (Recommended)
+
+Use Microsoft 365 Admin Center:
+
+1. Sign in to `admin.microsoft.com` as a Microsoft 365 admin.
+2. Navigate to **Settings** → **Integrated apps**.
+3. Choose **Upload custom apps**.
+4. Select **Provide a URL to the manifest file**.
+5. Enter:
+
+   ```text
+   https://<your-domain>/manifest.xml
+   ```
+
+6. Assign users or security groups.
+7. Deploy.
+
+The manifest URL is stable. Future `deploy-app.sh` runs update the hosted manifest without requiring IT to upload a new file.
+
+### Option B: Manual Sideloading (Development/Test)
+
+1. Open Microsoft Word.
+2. Go to **Insert** → **Get Add-ins**.
+3. Open **My Add-ins**.
+4. Choose **Upload My Add-in**.
+5. Upload the generated `manifest.xml`.
+
+![Office Add-ins Upload Screen](assets/screenshots/office-addins-upload.png)
+
+## Step 8: Test the Add-in
+
+1. Open the add-in from the Word ribbon.
+2. In SSO mode, click **Sign in with Glean**.
+3. Complete your organization's Glean login.
+4. Confirm the home screen loads.
+5. Open **Redlining Review**, select a template and playbook, and run analysis.
+6. Apply a small set of recommendations and confirm Word Track Changes are created.
+7. Open **Chat with Contract** and ask a document-grounded question.
+
+![SSO Login Screen](assets/screenshots/add-in-sso-screen.png)
+
+![Review Setup](assets/screenshots/new-add-in-review-setup-screen.png)
+
+![Analyzing with Glean AI](assets/screenshots/new-add-in-analyzing-with-glean-screen.png)
+
+## Admin Configuration
+
+The add-in includes an admin configuration flow for organization-wide defaults. Admin users are seeded through `ADMIN_EMAILS` in `prod.env` and can manage supported settings after deployment.
+
+Admin-managed settings include:
+
+- Glean instance name.
+- Chat, Redliner, and Listing Agent IDs.
+- OAuth client ID for static OAuth mode.
+- Admin email list.
+- Default template and playbook settings.
+- Track Changes and notification defaults.
+
+Settings are resolved in this order:
+
+1. User override from local settings.
+2. Org config from DynamoDB/admin page.
+3. Baked-in defaults generated from `prod.env`.
+
+## Local Development
+
+This project deploys source files directly to S3. There is no production webpack build step.
+
+```bash
+npm install
+npm run dev-certs
+npm run validate
+npm run sideload
+```
+
+Generated deployment files are gitignored:
+
+- `src/config/api.js`
+- `src/config/glean-defaults.js`
+- `src/taskpane/login.js`
+- `src/taskpane/auth.js`
+- `manifest.xml`
+
+## Updating a Deployment
+
+### Frontend or Agent Setting Changes
+
+Use this after changing files under `src/` or refreshing generated defaults:
+
+```bash
+./deployment/scripts/deploy-app.sh prod
+```
+
+### Infrastructure Changes
+
+Use this after changing `deployment/cloudformation.yaml`:
 
 ```bash
 ./deployment/scripts/deploy-infrastructure.sh prod
 ./deployment/scripts/deploy-app.sh prod
 ```
 
-### 4. Test SSO Login
+### Force-Reseed Org Config
 
-1. Open the add-in in Word
-2. You should see a **"Sign in with Glean"** button instead of email/password
-3. Click the button — a dialog opens with your organization's SSO login
-4. After successful authentication, the dialog closes and you're redirected to the app
+If you need to overwrite DynamoDB defaults from `prod.env`:
 
-### How SSO Works
+```bash
+./deployment/scripts/deploy-app.sh prod --force-seed
+```
 
-1. User clicks "Sign in with Glean" → Office Dialog API opens `oauth-dialog.html`
-2. Dialog generates PKCE code verifier/challenge and redirects to Glean's `/api/oauth/authorize`
-3. User authenticates via their organization's IdP (Okta, Azure AD, Google, etc.)
-4. Glean redirects back to `oauth-callback.html` with an authorization code
-5. Callback page exchanges code for tokens via the OAuth token proxy Lambda
-6. Tokens stored in localStorage, dialog sends `messageParent` back to taskpane
-7. Access token is silently refreshed at 80% TTL using the refresh token
+## Team Handoff
 
-### Token Lifecycle
+The real `deployment/config/prod.env` file is gitignored. A new deployer should:
 
-- **Access token**: Short-lived, used for all Glean API calls
-- **Refresh token**: Long-lived, used to silently refresh access tokens
-- **Silent refresh**: Runs at 80% of token TTL, no user interaction needed
-- **Loop prevention**: Max 1 refresh attempt per 60 seconds, exponential backoff on failures (up to 5 minutes)
-- **Re-auth**: If refresh fails after 5 attempts, user is prompted to sign in again via Dialog API
+1. Copy the example:
 
----
+   ```bash
+   cp deployment/config/prod.env.example deployment/config/prod.env
+   ```
 
-## Admin Page
+2. Fill in AWS, domain, certificate, auth mode, admin emails, Glean instance, and agent IDs.
+3. Use SSO/DCR unless there is a specific reason to use Cognito or static OAuth.
+4. Run the infrastructure and app deployment scripts.
 
-The admin page allows designated administrators to manage organization-wide configuration without redeploying.
+## Troubleshooting
 
-### Accessing the Admin Page
+### Add-in Does Not Load
 
-1. Log into the add-in
-2. If you're an admin (email listed in `ADMIN_EMAILS`), a **shield icon** appears in the header
-3. Click the shield icon to open the admin page
+- Verify `manifest.xml` URLs use the expected custom domain.
+- Confirm the CloudFront distribution is deployed.
+- Confirm DNS points to CloudFront.
+- Check the browser/Office.js console.
 
-### Admin Capabilities
+### Sign in with Glean Does Not Work
 
-- **Manage admin emails**: Add or remove admin users
-- **Configure Glean settings**: Set default instance, agent IDs, and OAuth client ID
-- **Organization-wide defaults**: Settings configured here apply to all users as defaults
+- Confirm `AUTH_MODE=sso` in `prod.env` and in generated `src/config/glean-defaults.js`.
+- Confirm `OAUTH_CLIENT_TYPE=dcr` unless you intentionally use a static OAuth client.
+- Confirm `https://<your-domain>/taskpane/oauth-callback.html` is reachable.
+- Check browser console logs for `[OAUTH]` messages.
+- Check the DCR registration Lambda and OAuth token proxy Lambda logs in CloudWatch.
 
-### Config Resolution (3-tier)
+### Agent Calls Fail
 
-Settings are resolved in this order:
-1. **User override** — User's local settings (from Settings screen)
-2. **Org config** — Admin-configured defaults (from Admin page)
-3. **Baked-in defaults** — Values from `prod.env` at deployment time
+- Confirm `GLEAN_INSTANCE` is correct.
+- Confirm the Redliner, Chat, and Listing Agent IDs are correct.
+- Confirm the user has signed in through Glean SSO and has a valid OAuth access token.
+- In Cognito mode only, confirm the user's Glean API token is configured and has the required permissions.
+- Review Lambda logs for `/list`, `/analyze`, or `/chat`.
 
-### Post-Deployment Changes (No Redeploy Needed)
+### Template or Playbook Lists Are Empty
 
-These can be changed via the admin page:
-- Agent IDs (chat, redliner, listing)
-- Glean instance name
-- OAuth Client ID
-- Admin email list
+- Confirm the Listing Agent is configured with the correct source folders.
+- Confirm the agent has access to the underlying documents.
+- Confirm the Listing Agent returns valid JSON.
 
-### Changes That Require Redeployment
+### Changes Do Not Apply
 
-- Switching auth mode (Cognito ↔ SSO) → Edit `prod.env` + run both deploy scripts
-- Changing domain / certificate → Edit `prod.env` + run `deploy-infrastructure.sh`
-- Resetting config to prod.env values → Run `deploy-app.sh --force-seed`
+- Confirm Word Track Changes can be enabled.
+- Check browser console logs for search or XML parsing errors.
+- Confirm the Redliner Agent returns valid XML matching the expected change schema.
 
----
+### CloudFormation Deployment Fails
 
-## Security
+- Confirm you are deploying in the intended AWS region.
+- Confirm the ACM certificate exists in `us-east-1`.
+- Confirm the AWS CLI profile has sufficient permissions.
+- Review CloudFormation stack events.
 
-- ✅ No hardcoded credentials in repository
-- ✅ Dual-mode auth: Cognito JWT or Glean OAuth2 PKCE
-- ✅ Lambda@Edge request validation
-- ✅ WAF protection with rate limiting
-- ✅ HTTPS only (CloudFront + ACM)
-- ✅ S3 private buckets with OAC
-- ✅ OAuth tokens stored in localStorage with automatic refresh
-- ✅ PKCE flow prevents authorization code interception
-- ✅ State parameter prevents CSRF attacks
-- ✅ Redirect URI validation on token proxy Lambda
+## Optional: Cognito Mode
 
----
+Cognito mode is still supported, but it is not the recommended production path for Solutions Library deployments.
+
+Use Cognito mode when:
+
+- You need a quick isolated demo environment.
+- You do not want to wire SSO during a POC.
+- You are testing infrastructure without involving an enterprise IdP.
+
+In Cognito mode:
+
+- Set `AUTH_MODE=cognito`.
+- Provide `COGNITO_USER_EMAIL` and `COGNITO_USER_PASSWORD`.
+- Users sign in with Cognito credentials.
+- Each user must configure a Glean API token in the add-in settings.
+
+## Optional: Static OAuth Client Mode
+
+DCR is recommended because it registers a public OAuth client and does not require a client secret. Static OAuth mode is supported for environments that require a pre-registered OAuth client.
+
+For static OAuth:
+
+```bash
+AUTH_MODE=sso
+OAUTH_CLIENT_TYPE=static
+GLEAN_OAUTH_CLIENT_ID=<your-client-id>
+GLEAN_OAUTH_CLIENT_SECRET=<your-client-secret>
+```
+
+The client secret is stored in Lambda environment variables and is not exposed to the browser.
 
 ## Project Structure
 
-```
+```text
 glean-legal-o365-addin/
 ├── src/
-│   ├── taskpane/              # Main UI components
-│   │   ├── login.html/.js     # Dual-mode login (Cognito or SSO)
-│   │   ├── auth.js            # Auth middleware (validates tokens)
-│   │   ├── taskpane.html      # Main app shell
-│   │   ├── app.js             # App logic + SSO lifecycle
-│   │   ├── admin.html/.js     # Admin config page
-│   │   ├── oauth-dialog.html  # OAuth PKCE flow popup
-│   │   ├── oauth-callback.html # OAuth redirect handler
-│   │   └── screens.js         # Screen templates
-│   ├── services/              # Business logic
-│   │   ├── gleanApi.js        # Glean API integration
-│   │   ├── gleanOAuth.js      # OAuth PKCE + token lifecycle
-│   │   ├── settings.js        # 3-tier config resolution
-│   │   └── officeIntegration.js # Word API integration
-│   └── config/                # API and default configuration
+│   ├── taskpane/              # Word taskpane UI, login, auth, OAuth callback/dialog
+│   ├── services/              # Glean API, OAuth, Word integration, settings, Track Changes
+│   ├── models/                # Change and apply-result models
+│   └── config/                # Generated config templates
 ├── deployment/
-│   ├── cloudformation.yaml    # AWS infrastructure (Lambdas, API GW, etc.)
+│   ├── cloudformation.yaml    # AWS infrastructure
 │   ├── scripts/               # Deployment scripts
-│   ├── config/                # Environment configuration (prod.env)
-│   └── glean/
-│       └── agents/            # Agent templates & instructions
-└── manifest.xml               # Office Add-in manifest
+│   ├── config/                # prod.env.example
+│   └── glean/agents/          # Glean agent templates and instructions
+├── manifest.xml.example       # Office Add-in manifest template
+└── package.json               # Office Add-in development tooling
 ```
 
----
+## Additional Documentation
 
-## Additional Resources
-
-- [Glean Agent Templates](deployment/glean/README.md) - Detailed agent setup instructions
-
----
+- `deployment/glean/README.md` — Glean agent setup.
+- `MIGRATION.md` — migration guidance for older Cognito/static-OAuth deployments.
+- `deployment/config/prod.env.example` — environment variable reference.
 
 ## Support
 
-For issues or questions, please refer to the troubleshooting section above or contact your Glean administrator.
+For deployment questions, start with the troubleshooting sections in this README and the relevant AWS CloudFormation/Lambda logs. For Glean tenant configuration, work with your Glean administrator.
