@@ -40,7 +40,7 @@
     "css-loader": "^6.8.1",
     "style-loader": "^3.3.3",
     "file-loader": "^6.2.0",
-    "office-addin-debugging": "^5.0.0",
+    "office-addin-debugging": "^6.1.1",
     "office-addin-dev-certs": "^1.11.3",
     "office-addin-manifest": "^1.12.3"
   },
