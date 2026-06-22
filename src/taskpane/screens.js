@@ -254,14 +254,19 @@ window.app.screens = {
                     <span class="stat-label">Identified</span>
                 </div>
                 <div class="summary-divider"></div>
-                <div class="summary-stat-compact ${app.getAppliedCount() > 0 ? 'stat-success' : ''}">
-                    <span class="stat-value">${app.getAppliedCount()}</span>
+                <div class="summary-stat-compact ${app.getAppliedCount() > 0 ? 'stat-success' : ''}" id="stat-applied-box">
+                    <span class="stat-value" id="stat-applied">${app.getAppliedCount()}</span>
                     <span class="stat-label">Applied</span>
                 </div>
                 <div class="summary-divider"></div>
-                <div class="summary-stat-compact ${app.getFailedCount() > 0 ? 'stat-error' : ''}">
-                    <span class="stat-value">${app.getFailedCount()}</span>
+                <div class="summary-stat-compact ${app.getFailedCount() > 0 ? 'stat-error' : ''}" id="stat-failed-box">
+                    <span class="stat-value" id="stat-failed">${app.getFailedCount()}</span>
                     <span class="stat-label">Failed</span>
+                </div>
+                <div class="summary-divider"></div>
+                <div class="summary-stat-compact">
+                    <span class="stat-value" id="stat-remaining">${app.getRemainingCount()}</span>
+                    <span class="stat-label">Remaining</span>
                 </div>
             </div>
             
@@ -271,10 +276,10 @@ window.app.screens = {
             </div>
             
             <div class="home-label" style="display: flex; align-items: center; justify-content: space-between;">
-                <span>Changes <span style="font-weight: 400; color: #c0c5cc;">${app.selectedChanges.size} of ${totalChanges} selected</span></span>
+                <span>Changes <span class="changes-selected-meta" id="changes-selected-label" style="font-weight: 400; color: #c0c5cc;">${app.getActiveSelectedIds().length} selected · ${app.getRemainingCount()} remaining</span></span>
                 <span style="display: flex; gap: 4px;">
-                    <button class="btn-ghost-sm" onclick="app.selectAllChanges()" ${app.allChangesApplied ? 'disabled' : ''}>Select All</button>
-                    <button class="btn-ghost-sm" onclick="app.deselectAllChanges()" ${app.allChangesApplied ? 'disabled' : ''}>Deselect All</button>
+                    <button class="btn-ghost-sm changes-bulk-btn" onclick="app.selectAllChanges()" ${app.getRemainingCount() === 0 ? 'disabled' : ''}>Select All</button>
+                    <button class="btn-ghost-sm changes-bulk-btn" onclick="app.deselectAllChanges()" ${app.getRemainingCount() === 0 ? 'disabled' : ''}>Deselect All</button>
                 </span>
             </div>
             <div class="change-details-list">
@@ -283,14 +288,14 @@ window.app.screens = {
             
             <div class="action-buttons-fixed">
                 <button class="btn btn-secondary btn-action" onclick="app.showScreen('review-setup')">Back to Setup</button>
-                <button class="btn btn-primary btn-action ${app.allChangesApplied ? 'disabled' : ''}" onclick="app.applyAllChanges()" ${app.allChangesApplied ? 'disabled' : ''} title="${app.allChangesApplied ? 'Changes have already been applied. Please run another review to apply more changes.' : 'Apply all recommended changes to the document'}">
+                <button class="btn btn-primary btn-action ${app.getRemainingCount() === 0 ? 'disabled' : ''}" onclick="app.applySelectedChanges()" ${app.getRemainingCount() === 0 ? 'disabled' : ''} title="${app.getRemainingCount() === 0 ? 'All redlines have been applied. Run a new review to generate more.' : 'Apply the selected redlines to the document'}">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;">
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                         <polyline points="14 2 14 8 20 8"></polyline>
                         <line x1="12" y1="18" x2="12" y2="12"></line>
                         <line x1="9" y1="15" x2="15" y2="15"></line>
                     </svg>
-                    Apply All Changes
+                    Apply Selected
                 </button>
             </div>
         `;

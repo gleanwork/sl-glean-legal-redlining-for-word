@@ -716,7 +716,7 @@ Resources:
           JWKS_URI: !If
             - IsCognitoAuth
             - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/jwks.json'
-            - !Sub 'https://${GleanInstance}-be.glean.com/oauth/jwks'
+            - !Sub 'https://${GleanInstance}-be.glean.com/api/oauth/jwks'
           EXPECTED_ISSUER: !If
             - IsCognitoAuth
             - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
@@ -1820,6 +1820,7 @@ Resources:
               const instance = body.instance || process.env.GLEAN_INSTANCE || '';
               const message = body.message;
               const documentContent = body.documentContent || '';
+              const chatAgentId = body.chatAgentId || '';
               const chatId = body.chatId;
               
               // Validate required parameters
@@ -1828,18 +1829,17 @@ Resources:
                   responseStream.end();
                   return;
               }
+              if (!chatAgentId) {
+                  responseStream.write(`data: ${JSON.stringify({ error: 'Missing required parameter: chatAgentId' })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
               
               // Build Glean Chat API request
               const gleanUrl = `https://${instance}-be.glean.com/rest/api/v1/chat`;
               
-              // Build message with document context
-              let messageText;
-              if (documentContent && documentContent.trim()) {
-                  const prompt = "You're a professional legal contract reviewer responding to user chat messages. I'll provide you with the user's initial question, including the contract document body. After your initial answer users might ask follow-up questions - be sure to ground all answers to the contract document body provided in this initial message.";
-                  messageText = `${prompt}\n\nUser's initial question: ${message}\n\n<<<DOCUMENT>>>\n${documentContent}\n<<<END_DOCUMENT>>>`;
-              } else {
-                  messageText = message;
-              }
+              // The chat agent expects both sections in every message.
+              const messageText = `<question>\n${message}\n</question>\n\n<contract_body>\n${documentContent}\n</contract_body>`;
               
               const gleanPayload = {
                   messages: [{
@@ -1848,7 +1848,7 @@ Resources:
                           text: messageText
                       }]
                   }],
-                  agent_id: '4fb936e772ca4b48ae59dbb424b36f18',
+                  agentId: chatAgentId,
                   saveChat: true,
                   stream: false
               };
@@ -1930,6 +1930,17 @@ Resources:
                       const texts = fragments.filter(f => f.text).map(f => f.text);
                       replyText = texts.join(' ');
                   }
+
+              if (!replyText.trim()) {
+                  clearInterval(heartbeat);
+                  console.log(`Glean Chat API returned no assistant text. chatId=${chatIdResponse || 'none'}, messages=${messages.length}, agent_id=${chatAgentId}`);
+                  responseStream.write(`data: ${JSON.stringify({
+                      error: 'No assistant response returned from chat agent',
+                      details: `Glean Chat API returned ${messages.length} message(s), but none contained assistant text.`
+                  })}\n\n`);
+                  responseStream.end();
+                  return;
+              }
                   
                   const result = {
                       chatId: chatIdResponse,

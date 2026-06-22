@@ -152,7 +152,7 @@ Only use this if you intentionally want to return to demo/POC username-password 
 ```bash
 AUTH_MODE=cognito
 COGNITO_USER_EMAIL=admin@example.com
-COGNITO_USER_PASSWORD=ChangeMe123!@#
+COGNITO_USER_PASSWORD=<your-strong-password>
 
 ./deployment/scripts/deploy-infrastructure.sh prod
 ./deployment/scripts/deploy-app.sh prod --force-seed

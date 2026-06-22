@@ -3014,6 +3014,14 @@ body {
     line-height: 1;
 }
 
+/* Keep the selected (filled) state visible on hover — the generic hover rule
+   would otherwise repaint a checked box with the light unselected background. */
+.change-select-checkbox.checked:hover:not(.disabled) {
+    background: #1e3a8a;
+    border-color: #1e3a8a;
+    transform: scale(1.1);
+}
+
 .change-select-checkbox.disabled {
     opacity: 0.4;
     cursor: not-allowed;
@@ -3686,6 +3694,97 @@ body {
     background: white;
     border-radius: 4px;
     line-height: 1.5;
+}
+
+/* Applied redline item styling */
+.change-detail-item.item-applied {
+    border-color: #a7f3d0;
+}
+
+.change-detail-item.item-applied .change-detail-header {
+    background: #f0fdf4;
+}
+
+/* Finalized (attempted) redlines are terminal — gray out and de-emphasize */
+.change-detail-item.finalized {
+    opacity: 0.85;
+}
+
+.change-detail-item.finalized .change-select-checkbox {
+    cursor: default;
+}
+
+.change-detail-item.item-applied .change-title {
+    color: #6b7280;
+}
+
+/* Per-redline apply button (subtle, lives at the bottom of the expanded card) */
+.change-apply-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid #eef0f3;
+}
+
+.btn-apply-single {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #047857;
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-apply-single:hover:not(:disabled) {
+    background: #d1fae5;
+    border-color: #34d399;
+    color: #065f46;
+}
+
+.btn-apply-single:disabled {
+    cursor: default;
+    opacity: 0.7;
+}
+
+.btn-apply-single svg {
+    flex-shrink: 0;
+}
+
+/* Inline spinner for single-redline apply (no full-screen progress) */
+.btn-spinner-sm {
+    display: inline-block;
+    width: 13px;
+    height: 13px;
+    border: 2px solid rgba(4, 120, 87, 0.25);
+    border-top-color: #047857;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: -2px;
+}
+
+/* "Applied to the document" confirmation note inside an applied card */
+.change-applied-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid #eef0f3;
+    font-size: 13px;
+    font-weight: 600;
+    color: #047857;
+}
+
+.change-applied-note svg {
+    flex-shrink: 0;
+    color: #10b981;
 }
 
 /* Success screen for no changes needed */

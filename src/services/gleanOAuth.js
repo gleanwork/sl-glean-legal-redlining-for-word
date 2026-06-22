@@ -60,12 +60,15 @@ export const gleanOAuth = {
         const isDCR = oauthClientType === 'dcr';
         
         if (isDCR) {
-            // DCR mode: use cached DCR client_id, token exchange goes directly to Glean
+            // DCR mode: public client (no secret). Token exchange still routes through the
+            // Lambda proxy rather than calling Glean directly — Glean only returns CORS
+            // headers for allowlisted origins, so a browser-direct call fails in CORS-strict
+            // contexts like Word Online. The proxy relays server-to-server, so it works everywhere.
             const dcrClientId = localStorage.getItem(TOKEN_KEYS.DCR_CLIENT_ID) || '';
             return {
                 authorizeUrl: `https://${instance}-be.glean.com/oauth/authorize`,
-                tokenUrl: `https://${instance}-be.glean.com/oauth/token`,
-                tokenProxyUrl: null, // not used in DCR mode
+                tokenUrl: null, // not used — token exchange goes through the proxy
+                tokenProxyUrl: API_CONFIG.OAUTH_TOKEN_ENDPOINT,
                 clientId: dcrClientId,
                 redirectUri: `${baseUrl}/taskpane/oauth-callback.html`,
                 scopes: 'agents chat search',
@@ -188,36 +191,20 @@ export const gleanOAuth = {
         
         const config = this.getAuthConfig();
         
-        let response;
-        if (config.isDCR) {
-            // DCR mode: POST directly to Glean's /oauth/token (public client, no secret)
-            const formBody = new URLSearchParams({
+        // Exchange through the Lambda token proxy (server-to-server, no browser CORS dependency
+        // on Glean). For DCR the proxy relays a public-client request; for static it injects the
+        // client_secret. Identical request shape for both modes.
+        const response = await fetch(config.tokenProxyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
                 grant_type: 'authorization_code',
                 code: code,
                 redirect_uri: config.redirectUri,
                 client_id: config.clientId,
                 code_verifier: codeVerifier
-            });
-            
-            response = await fetch(config.tokenUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: formBody.toString()
-            });
-        } else {
-            // Static mode: POST to Lambda token proxy (adds client_secret server-side)
-            response = await fetch(config.tokenProxyUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    grant_type: 'authorization_code',
-                    code: code,
-                    redirect_uri: config.redirectUri,
-                    client_id: config.clientId,
-                    code_verifier: codeVerifier
-                })
-            });
-        }
+            })
+        });
         
         // Clean up PKCE state
         sessionStorage.removeItem(PKCE_KEYS.CODE_VERIFIER);
@@ -271,32 +258,17 @@ export const gleanOAuth = {
         const config = this.getAuthConfig();
         
         try {
-            let response;
-            if (config.isDCR) {
-                // DCR mode: POST directly to Glean's /oauth/token (public client)
-                const formBody = new URLSearchParams({
+            // Refresh through the Lambda token proxy (server-to-server) for both modes, same as
+            // the initial exchange — avoids the browser CORS dependency on Glean's token endpoint.
+            const response = await fetch(config.tokenProxyUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     grant_type: 'refresh_token',
                     refresh_token: refreshToken,
                     client_id: config.clientId
-                });
-                
-                response = await fetch(config.tokenUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: formBody.toString()
-                });
-            } else {
-                // Static mode: POST to Lambda token proxy
-                response = await fetch(config.tokenProxyUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        grant_type: 'refresh_token',
-                        refresh_token: refreshToken,
-                        client_id: config.clientId
-                    })
-                });
-            }
+                })
+            });
             
             if (!response.ok) {
                 consecutiveFailures++;

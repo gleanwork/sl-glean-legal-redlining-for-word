@@ -21,9 +21,11 @@ window.app = {
     availablePlaybooks: [], // Playbooks from GDrive
     currentAnalysisResult: null, // Current redliner analysis result
     lastAnalysisError: null, // Last analysis error details for error screen
-    lastApplyResults: null, // Results from last apply operation
-    allChangesApplied: false, // Track if Apply All Changes has been clicked
-    isApplyingChanges: false, // Concurrency guard for apply operations
+    lastApplyResults: null, // Results from last apply operation (most recent batch; legacy screens)
+    allChangesApplied: false, // Derived: true once every redline is finalized (kept for back-compat)
+    appliedChangeIds: new Set(), // Cumulative IDs of successfully applied redlines (terminal)
+    failedChangeResults: new Map(), // Cumulative changeId -> { reason, diagnostics } for failed attempts (terminal)
+    isApplyingChanges: false, // Concurrency guard shared by single + bulk apply
     isAnalyzing: false, // Concurrency guard for analysis
     selectedChanges: new Set(), // Track which changes are selected for application
     selectedTemplate: '',  // Empty by default - user must choose
@@ -442,6 +444,16 @@ window.app = {
             this.lastApplyResults = JSON.parse(applyResults);
         }
         
+        // Load cumulative per-redline applied/failed state from localStorage
+        const appliedIds = localStorage.getItem('appliedChangeIds');
+        if (appliedIds) {
+            this.appliedChangeIds = new Set(JSON.parse(appliedIds));
+        }
+        const failedResults = localStorage.getItem('failedChangeResults');
+        if (failedResults) {
+            this.failedChangeResults = new Map(JSON.parse(failedResults));
+        }
+        
         // Load allChangesApplied flag from localStorage
         const allApplied = localStorage.getItem('allChangesApplied');
         if (allApplied !== null) {
@@ -468,6 +480,8 @@ window.app = {
         localStorage.setItem('commentOverrides', JSON.stringify(this.commentOverrides));
         localStorage.setItem('selectedChanges', JSON.stringify([...this.selectedChanges]));
         localStorage.setItem('allChangesApplied', JSON.stringify(this.allChangesApplied));
+        localStorage.setItem('appliedChangeIds', JSON.stringify([...this.appliedChangeIds]));
+        localStorage.setItem('failedChangeResults', JSON.stringify([...this.failedChangeResults.entries()]));
     },
     
     /**
@@ -496,6 +510,8 @@ window.app = {
         localStorage.removeItem('selectedChanges');
         localStorage.removeItem('lastApplyResults');
         localStorage.removeItem('allChangesApplied');
+        localStorage.removeItem('appliedChangeIds');
+        localStorage.removeItem('failedChangeResults');
         
         // Clear in-memory state
         this.currentAnalysisResult = null;
@@ -503,6 +519,9 @@ window.app = {
         this.rejectedRecommendations = new Set();
         this.commentOverrides = {};
         this.selectedChanges = new Set();
+        this.appliedChangeIds = new Set();
+        this.failedChangeResults = new Map();
+        this.lastApplyResults = null;
         this.allChangesApplied = false;
         
         console.log('[APP] Review data cleared');
@@ -947,7 +966,11 @@ window.app = {
         localStorage.removeItem('lastAnalysisDate');
         localStorage.removeItem('lastTemplate');
         localStorage.removeItem('lastPlaybook');
+        localStorage.removeItem('appliedChangeIds');
+        localStorage.removeItem('failedChangeResults');
         this.lastApplyResults = null;
+        this.appliedChangeIds = new Set();
+        this.failedChangeResults = new Map();
         this.allChangesApplied = false;
         console.log('[APP] Cleared last review from storage');
     },
@@ -1227,6 +1250,29 @@ window.app = {
                     console.log('[APP] Captured custom playbook input:', this.customPlaybookInput ? this.customPlaybookInput.substring(0, 100) + '...' : '(empty)');
                 }
             }
+
+            // Validate review setup before doing document work or moving to the progress screen.
+            const templateValue = this.selectedTemplate || '';
+            const playbookValue = this.selectedPlaybook || '';
+            if (!templateValue || !playbookValue) {
+                const missing = [
+                    !templateValue ? 'Template' : null,
+                    !playbookValue ? 'Playbook' : null
+                ].filter(Boolean).join(' and ');
+                this.showNotification(`Please select a valid ${missing} before starting the review.`, 'warning');
+                console.warn('[APP] Review setup incomplete:', { templateValue, playbookValue });
+                return;
+            }
+            if (templateValue === 'custom' && !this.customTemplateInput) {
+                this.showNotification('Please provide a custom Template URL or text before starting the review.', 'warning');
+                console.warn('[APP] Custom template selected without input');
+                return;
+            }
+            if (playbookValue === 'custom' && !this.customPlaybookInput) {
+                this.showNotification('Please provide a custom Playbook URL or text before starting the review.', 'warning');
+                console.warn('[APP] Custom playbook selected without input');
+                return;
+            }
             
             // Check for existing tracked changes and accept them before extraction
             const hasTrackedChanges = await officeIntegration.hasTrackedChanges();
@@ -1248,42 +1294,29 @@ window.app = {
                     console.warn('[APP] Failed to accept tracked changes - proceeding with current document state');
                 }
             }
-            
-            // Show progress screen
-            this.showScreen('analysis-progress');
-            
-            // Start rotating progress messages
-            this.startProgressMessages();
-            
             // Get document content based on scope
             let documentText;
             if (isSelectedTextScope) {
                 documentText = await officeIntegration.getSelectedText();
                 if (!documentText || documentText.trim().length === 0) {
-                    throw new Error('No text selected. Please select text in the document or switch to "Entire Document" mode.');
+                    this.showNotification('No text selected. Highlight text in the document first, or switch to Entire Document mode.', 'warning');
+                    console.warn('[APP] Selected text review requested without selected text');
+                    return;
                 }
                 console.log('[APP] Selected text length:', documentText.length, 'characters');
             } else {
                 documentText = await officeIntegration.getDocumentContent();
                 if (!documentText || documentText.trim().length === 0) {
-                    throw new Error('Document is empty. Please add content before analyzing.');
+                    this.showNotification('The document appears to be empty. Add content before starting the review.', 'warning');
+                    console.warn('[APP] Entire document review requested with empty document content');
+                    return;
                 }
                 console.log('[APP] Document length:', documentText.length, 'characters');
             }
-            
-            // Use stored selection values (not from DOM, as screen may have been re-rendered)
-            const templateValue = this.selectedTemplate || '';
-            const playbookValue = this.selectedPlaybook || '';
-            
-            // Validate that template and playbook are selected
-            if (!templateValue || templateValue === '') {
-                throw new Error('A review Template and Playbook must be selected before starting analysis.');
-            }
-            if (!playbookValue || playbookValue === '') {
-                throw new Error('A review Template and Playbook must be selected before starting analysis.');
-            }
-            
-            // Custom inputs already captured before screen change (see above)
+
+            // Show progress only after all setup validation and document extraction succeeds.
+            this.showScreen('analysis-progress');
+            this.startProgressMessages();
             
             console.log('[APP] Template selection (from state):', templateValue);
             console.log('[APP] Playbook selection (from state):', playbookValue);
@@ -1317,8 +1350,6 @@ window.app = {
                     if (this.customTemplateInput) {
                         params.customTemplateText = this.customTemplateInput;
                         console.log('[APP] Using custom template text:', this.customTemplateInput.substring(0, 100));
-                    } else {
-                        throw new Error('Please provide a custom template URL or text.');
                     }
                 } else {
                     // Use selected template URL
@@ -1334,8 +1365,6 @@ window.app = {
                     if (this.customPlaybookInput) {
                         params.customPlaybookText = this.customPlaybookInput;
                         console.log('[APP] Using custom playbook text:', this.customPlaybookInput.substring(0, 100));
-                    } else {
-                        throw new Error('Please provide a custom playbook URL or text.');
                     }
                 } else {
                     // Use selected playbook URL
@@ -1354,9 +1383,14 @@ window.app = {
             this.commentOverrides = {};
             this.manualEdits = {};
             this.selectedChanges.clear(); // Clear change selections for new review
+            this.appliedChangeIds = new Set(); // Reset cumulative applied state for new review
+            this.failedChangeResults = new Map(); // Reset cumulative failed state for new review
+            this.lastApplyResults = null;
             this.allChangesApplied = false; // Reset flag for new review
             localStorage.removeItem('selectedChanges');
             localStorage.removeItem('lastApplyResults');
+            localStorage.removeItem('appliedChangeIds');
+            localStorage.removeItem('failedChangeResults');
             this.saveState();
             
             // Store results with review scope
@@ -1868,24 +1902,83 @@ window.app = {
      * Get the status of a change (applied, failed, or pending)
      */
     getChangeStatus(changeId) {
-        if (!this.lastApplyResults) {
-            return { status: 'pending', reason: null };
-        }
-        
-        // Check if applied
-        if (this.lastApplyResults.applied && this.lastApplyResults.applied.includes(changeId)) {
+        // Status is driven by the cumulative per-redline state, which accumulates across
+        // every single/bulk apply rather than a single one-shot batch.
+        if (this.appliedChangeIds.has(changeId)) {
             return { status: 'applied', reason: null };
         }
-        
-        // Check if failed
-        if (this.lastApplyResults.failed && this.lastApplyResults.failed.length > 0) {
-            const failure = this.lastApplyResults.failed.find(f => f.changeId === changeId);
-            if (failure) {
-                return { status: 'failed', reason: failure.reason || 'Unknown error' };
-            }
+        if (this.failedChangeResults.has(changeId)) {
+            const failure = this.failedChangeResults.get(changeId);
+            return { status: 'failed', reason: (failure && failure.reason) || 'Unknown error' };
         }
-        
         return { status: 'pending', reason: null };
+    },
+
+    /**
+     * A redline is "finalized" once it has been attempted (success or failure).
+     * Finalized redlines are terminal: they cannot be re-applied or re-selected.
+     */
+    isChangeFinalized(changeId) {
+        return this.appliedChangeIds.has(changeId) || this.failedChangeResults.has(changeId);
+    },
+
+    /**
+     * Number of redlines that have not yet been attempted (still actionable).
+     */
+    getRemainingCount() {
+        if (!this.currentAnalysisResult?.changes) return 0;
+        return this.currentAnalysisResult.changes.filter((change, index) => {
+            const changeId = change.id || `change_${index + 1}`;
+            return !this.isChangeFinalized(changeId);
+        }).length;
+    },
+
+    /**
+     * IDs that are currently selected AND still actionable (not finalized).
+     */
+    getActiveSelectedIds() {
+        return [...this.selectedChanges].filter(id => !this.isChangeFinalized(id));
+    },
+
+    /**
+     * Merge a batch ApplyResult (or single-change outcome) into the cumulative
+     * per-redline state, drop finalized ids from the selection, and persist.
+     */
+    recordApplyResults(results) {
+        this.lastApplyResults = results; // retained for legacy screens
+        (results.applied || []).forEach(changeId => {
+            this.appliedChangeIds.add(changeId);
+            this.failedChangeResults.delete(changeId);
+            this.selectedChanges.delete(changeId);
+        });
+        (results.failed || []).forEach(failure => {
+            const changeId = failure.changeId;
+            if (!changeId) return;
+            if (!this.appliedChangeIds.has(changeId)) {
+                this.failedChangeResults.set(changeId, {
+                    reason: failure.reason || 'Unknown error',
+                    diagnostics: failure.diagnostics || null
+                });
+            }
+            this.selectedChanges.delete(changeId);
+        });
+        this.allChangesApplied = this.getRemainingCount() === 0;
+        this.saveState();
+        this.persistAnalysisResult();
+    },
+
+    /**
+     * Persist the current (possibly edited) analysis result so a reload restores
+     * edits + finalized state consistently.
+     */
+    persistAnalysisResult() {
+        try {
+            if (this.currentAnalysisResult) {
+                localStorage.setItem('lastAnalysisResult', JSON.stringify(this.currentAnalysisResult));
+            }
+        } catch (error) {
+            console.warn('[APP] Failed to persist analysis result:', error);
+        }
     },
     
     /**
@@ -1986,18 +2079,30 @@ window.app = {
                                 <strong>Reason:</strong> ${escapeHtml(changeStatus.reason)}
                             </div>
                             <div class="failure-alert-action">
-                                You may need to apply this change manually in the document.
+                                This redline is closed for automatic apply. Use "Navigate to change" above to locate the text and apply it manually in the document.
                             </div>
                         </div>
                     `;
                 }
                 
-                // Always show navigate button for all changes
-                const itemClass = changeStatus.status === 'failed' ? 'change-detail-item clickable-change item-failed' : 'change-detail-item clickable-change';
+                // Finalized = attempted (success or failure) and therefore terminal
+                const isApplied = changeStatus.status === 'applied';
+                const isFailed = changeStatus.status === 'failed';
+                const finalized = isApplied || isFailed;
                 
-                // Check if this change is selected OR was applied (should show as checked)
-                const isSelected = this.selectedChanges.has(changeId) || changeStatus.status === 'applied';
-                const isDisabled = this.allChangesApplied;
+                // Card styling: gray out finalized redlines, accent applied vs failed
+                let itemClass = 'change-detail-item clickable-change';
+                if (isApplied) itemClass += ' item-applied finalized';
+                else if (isFailed) itemClass += ' item-failed finalized';
+                
+                // Selection: applied shows as checked; finalized cards are not toggleable
+                const isSelected = this.selectedChanges.has(changeId) || isApplied;
+                const isDisabled = finalized;
+                const checkboxTitle = isApplied
+                    ? 'Applied. This redline has been applied to the document.'
+                    : (isFailed
+                        ? 'This redline was attempted and cannot be re-applied here.'
+                        : (isSelected ? 'Click to deselect this redline' : 'Click to select this redline for application'));
                 
                 return `
                     <div class="${itemClass}" data-change-id="${changeId}">
@@ -2015,7 +2120,7 @@ window.app = {
                                 </div>
                                 <div class="change-select-checkbox ${isSelected ? 'checked' : ''} ${isDisabled ? 'disabled' : ''}" 
                                      onclick="event.stopPropagation(); app.toggleChangeSelection('${changeId}')" 
-                                     title="${isDisabled ? 'Changes already applied. Run new review to make changes.' : (isSelected ? 'Click to deselect this change' : 'Click to select this change for application')}"
+                                     title="${checkboxTitle}"
                                      data-change-id="${changeId}">
                                 </div>
                             </div>
@@ -2037,8 +2142,8 @@ window.app = {
                                         <span class="change-icon">${changeIcon}</span>
                                         <span class="label-text">${leftLabel}:</span>
                                     </div>
-                                    ${(change.type === 'insert' || change.type === 'insertClause') ? `
-                                        <button class="btn-edit-inline ${this.allChangesApplied ? 'disabled' : ''}" onclick="app.toggleEditMode('${changeId}', 'left')" data-change-id="${changeId}" data-column="left" ${this.allChangesApplied ? 'title="Changes have already been applied. Please run another review to make edits."' : ''}>
+                                    ${((change.type === 'insert' || change.type === 'insertClause') && !finalized) ? `
+                                        <button class="btn-edit-inline" onclick="app.toggleEditMode('${changeId}', 'left')" data-change-id="${changeId}" data-column="left">
                                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
                                                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
@@ -2060,8 +2165,8 @@ window.app = {
                                 <div class="change-text-section ${change.type === 'insert' || change.type === 'insertClause' ? 'context-section' : ''}">
                                     <div class="change-text-label">
                                         <span class="label-text">${rightLabel}:</span>
-                                        ${change.type === 'replace' ? `
-                                            <button class="btn-edit-inline ${this.allChangesApplied ? 'disabled' : ''}" onclick="app.toggleEditMode('${changeId}', 'right')" data-change-id="${changeId}" data-column="right" ${this.allChangesApplied ? 'title="Changes have already been applied. Please run another review to make edits."' : ''}>
+                                        ${(change.type === 'replace' && !finalized) ? `
+                                            <button class="btn-edit-inline" onclick="app.toggleEditMode('${changeId}', 'right')" data-change-id="${changeId}" data-column="right">
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                                     <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
                                                     <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
@@ -2093,6 +2198,23 @@ window.app = {
                                     <div class="change-reasoning-text">${escapeHtml(change.reason)}</div>
                                 </div>
                             ` : ''}
+                            ${!finalized ? `
+                                <div class="change-apply-row">
+                                    <button class="btn-apply-single" data-change-id="${changeId}" onclick="event.stopPropagation(); app.applySingleChange('${changeId}')" title="Apply just this redline to the document">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <polyline points="20 6 9 17 4 12"></polyline>
+                                        </svg>
+                                        Apply this redline
+                                    </button>
+                                </div>
+                            ` : (isApplied ? `
+                                <div class="change-applied-note">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <polyline points="20 6 9 17 4 12"></polyline>
+                                    </svg>
+                                    Applied to the document
+                                </div>
+                            ` : '')}
                         </div>
                     </div>
                 `;
@@ -2123,9 +2245,8 @@ window.app = {
      * Toggle change selection for application
      */
     toggleChangeSelection(changeId) {
-        // Prevent selection if changes have already been applied
-        if (this.allChangesApplied) {
-            this.showNotification('Changes already applied. Run new review to make changes.', 'warning');
+        // Finalized redlines are terminal — they can't be re-selected
+        if (this.isChangeFinalized(changeId)) {
             return;
         }
         
@@ -2141,15 +2262,17 @@ window.app = {
         if (checkbox) {
             if (this.selectedChanges.has(changeId)) {
                 checkbox.classList.add('checked');
-                checkbox.title = 'Click to deselect this change';
+                checkbox.title = 'Click to deselect this redline';
             } else {
                 checkbox.classList.remove('checked');
-                checkbox.title = 'Click to select this change for application';
+                checkbox.title = 'Click to select this redline for application';
             }
         }
         
-        // Update Apply button text to show count
+        // Persist selection and update the apply button + summary counts
+        this.saveState();
         this.updateApplyButtonText();
+        this.updateResultsSummary();
         
         console.log(`[APP] Change ${changeId} ${this.selectedChanges.has(changeId) ? 'selected' : 'deselected'}. Total selected: ${this.selectedChanges.size}`);
     },
@@ -2158,58 +2281,134 @@ window.app = {
      * Update Apply All Changes button text to show selection count
      */
     updateApplyButtonText() {
+        // Only manage the apply button on the dashboard that actually lists changes.
+        // (The no-changes success variant reuses .btn-action.btn-primary for "Back to Home".)
+        if (!this.currentAnalysisResult?.changes?.length) return;
+        if (!document.querySelector('.change-details-list')) return;
+        
         const applyBtn = document.querySelector('.btn-action.btn-primary');
         if (!applyBtn) return;
         
         const iconSvg = applyBtn.querySelector('svg');
+        const remaining = this.getRemainingCount();
         
-        // If changes have already been applied, disable button with message
-        if (this.allChangesApplied) {
-            applyBtn.innerHTML = (iconSvg ? iconSvg.outerHTML : '') + ' Changes Already Applied';
+        // Everything has been attempted — nothing left to apply
+        if (remaining === 0) {
+            applyBtn.innerHTML = (iconSvg ? iconSvg.outerHTML : '') + ' All Changes Applied';
             applyBtn.disabled = true;
             applyBtn.classList.add('disabled');
-            applyBtn.title = 'Changes have already been applied. Run a new review to make more changes.';
+            applyBtn.title = 'All redlines have been applied. Run a new review to generate more.';
             return;
         }
         
-        const totalChanges = this.currentAnalysisResult?.changes?.length || 0;
-        const selectedCount = this.selectedChanges.size;
+        const selectedCount = this.getActiveSelectedIds().length;
         
-        // Update button text based on selection
+        // Update button text based on the active (non-finalized) selection
         if (selectedCount === 0) {
-            applyBtn.innerHTML = (iconSvg ? iconSvg.outerHTML : '') + ' Apply Selected Changes';
+            applyBtn.innerHTML = (iconSvg ? iconSvg.outerHTML : '') + ' Apply Selected';
             applyBtn.disabled = true;
             applyBtn.classList.add('disabled');
-            applyBtn.title = 'Please select at least one change to apply';
-        } else if (selectedCount === totalChanges) {
-            applyBtn.innerHTML = (iconSvg ? iconSvg.outerHTML : '') + ` Apply All ${totalChanges} Changes`;
+            applyBtn.title = 'Select at least one redline to apply, or apply one directly from its card.';
+        } else if (selectedCount === remaining) {
+            applyBtn.innerHTML = (iconSvg ? iconSvg.outerHTML : '') + ` Apply All ${remaining} Remaining`;
             applyBtn.disabled = false;
             applyBtn.classList.remove('disabled');
-            applyBtn.title = 'Apply all recommended changes to the document';
+            applyBtn.title = 'Apply all remaining selected redlines to the document';
         } else {
-            applyBtn.innerHTML = (iconSvg ? iconSvg.outerHTML : '') + ` Apply ${selectedCount} Selected Change${selectedCount !== 1 ? 's' : ''}`;
+            applyBtn.innerHTML = (iconSvg ? iconSvg.outerHTML : '') + ` Apply ${selectedCount} Selected`;
             applyBtn.disabled = false;
             applyBtn.classList.remove('disabled');
-            applyBtn.title = `Apply ${selectedCount} selected change${selectedCount !== 1 ? 's' : ''} to the document`;
+            applyBtn.title = `Apply ${selectedCount} selected redline${selectedCount !== 1 ? 's' : ''} to the document`;
         }
+    },
+    
+    /**
+     * Update the results summary stats + selection header in place (no full re-render).
+     */
+    updateResultsSummary() {
+        const appliedEl = document.getElementById('stat-applied');
+        if (appliedEl) appliedEl.textContent = this.getAppliedCount();
+        const failedEl = document.getElementById('stat-failed');
+        if (failedEl) failedEl.textContent = this.getFailedCount();
+        const remainingEl = document.getElementById('stat-remaining');
+        if (remainingEl) remainingEl.textContent = this.getRemainingCount();
+        
+        // Toggle success/error emphasis on the stat boxes
+        const appliedBox = document.getElementById('stat-applied-box');
+        if (appliedBox) appliedBox.classList.toggle('stat-success', this.getAppliedCount() > 0);
+        const failedBox = document.getElementById('stat-failed-box');
+        if (failedBox) failedBox.classList.toggle('stat-error', this.getFailedCount() > 0);
+        
+        // Selection / remaining label
+        const selLabel = document.getElementById('changes-selected-label');
+        if (selLabel) {
+            const sel = this.getActiveSelectedIds().length;
+            selLabel.textContent = `${sel} selected · ${this.getRemainingCount()} remaining`;
+        }
+        
+        // Disable bulk-selection controls when nothing remains
+        const remaining = this.getRemainingCount();
+        document.querySelectorAll('.changes-bulk-btn').forEach(b => { b.disabled = remaining === 0; });
+    },
+    
+    /**
+     * Re-render the change list in place after an apply, preserving which cards
+     * are expanded and the scroll position, then refresh stats + the apply button.
+     */
+    refreshResultsView() {
+        const list = document.querySelector('.change-details-list');
+        if (!list) {
+            // List not mounted (e.g. user navigated away) — nothing to refresh
+            return;
+        }
+        
+        // Capture currently expanded cards
+        const expanded = new Set();
+        document.querySelectorAll('.change-detail-item').forEach(item => {
+            const body = item.querySelector('.change-detail-body');
+            if (body && !body.classList.contains('collapsed')) {
+                expanded.add(item.getAttribute('data-change-id'));
+            }
+        });
+        
+        // Re-render the list
+        list.innerHTML = this.generateChangeDetailsList();
+        
+        // Restore expansion state
+        const downChevron = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+        expanded.forEach(id => {
+            const item = document.querySelector(`.change-detail-item[data-change-id="${id}"]`);
+            if (!item) return;
+            const body = item.querySelector('.change-detail-body');
+            const arrow = item.querySelector('.change-expand-arrow');
+            if (body) body.classList.remove('collapsed');
+            if (arrow) arrow.innerHTML = downChevron;
+        });
+        
+        this.updateResultsSummary();
+        this.updateApplyButtonText();
     },
     
     /**
      * Select all changes
      */
     selectAllChanges() {
-        if (this.allChangesApplied) {
-            this.showNotification('Changes already applied. Run new review to make changes.', 'warning');
+        if (!this.currentAnalysisResult || !this.currentAnalysisResult.changes) return;
+        
+        if (this.getRemainingCount() === 0) {
+            this.showNotification('All redlines have been applied. Run a new review to generate more.', 'warning');
             return;
         }
         
-        if (!this.currentAnalysisResult || !this.currentAnalysisResult.changes) return;
-        
+        // Select every redline that is still actionable (not finalized)
         this.currentAnalysisResult.changes.forEach((change, index) => {
             const changeId = change.id || `change_${index + 1}`;
-            this.selectedChanges.add(changeId);
+            if (!this.isChangeFinalized(changeId)) {
+                this.selectedChanges.add(changeId);
+            }
         });
         
+        this.saveState();
         // Re-render to update all checkboxes
         this.showScreen('results-dashboard');
     },
@@ -2218,12 +2417,8 @@ window.app = {
      * Deselect all changes
      */
     deselectAllChanges() {
-        if (this.allChangesApplied) {
-            this.showNotification('Changes already applied. Run new review to make changes.', 'warning');
-            return;
-        }
-        
         this.selectedChanges.clear();
+        this.saveState();
         
         // Re-render to update all checkboxes
         this.showScreen('results-dashboard');
@@ -2233,9 +2428,9 @@ window.app = {
      * Toggle edit mode for a change text field
      */
     toggleEditMode(changeId, column) {
-        // Prevent editing if changes have already been applied
-        if (this.allChangesApplied) {
-            this.showNotification('Changes have already been applied. Please run another review to make edits.', 'warning');
+        // Prevent editing once this redline has been attempted (terminal)
+        if (this.isChangeFinalized(changeId)) {
+            this.showNotification('This redline has already been applied and can no longer be edited.', 'warning');
             return;
         }
         
@@ -2341,6 +2536,9 @@ window.app = {
                 return div.innerHTML;
             };
             displayEl.innerHTML = escapeHtml(newValue);
+            
+            // Persist the edit so a reload restores it (and a later apply uses it)
+            this.persistAnalysisResult();
         }
         
         // Exit edit mode
@@ -2374,22 +2572,95 @@ window.app = {
      * Apply all changes as tracked changes
      */
     async applyAllChanges() {
-        // Prevent concurrent apply operations
-        if (this.isApplyingChanges) return;
-        
-        // Prevent applying changes if already applied
-        if (this.allChangesApplied) {
-            this.showNotification('Changes have already been applied. Please run another review to apply more changes.', 'warning');
+        // Back-compat alias — the bottom button now applies the active selection.
+        return this.applySelectedChanges();
+    },
+
+    /**
+     * Apply a single redline on its own, in place, without leaving the results list.
+     * Uses the change's current (possibly edited) text. Terminal: the redline is
+     * finalized whether the attempt succeeds or fails.
+     */
+    async applySingleChange(changeId) {
+        if (this.isApplyingChanges) {
+            this.showNotification('Another change is still being applied. Please wait.', 'warning');
             return;
         }
+        if (this.isChangeFinalized(changeId)) {
+            return; // Already attempted — terminal
+        }
+
+        const change = this.currentAnalysisResult?.changes?.find((c, index) =>
+            (c.id || `change_${index + 1}`) === changeId
+        );
+        if (!change) {
+            this.showNotification('Change not found', 'error');
+            return;
+        }
+
+        // Inline button feedback (no screen navigation)
+        const btn = document.querySelector(`.btn-apply-single[data-change-id="${changeId}"]`);
+        let originalBtnHtml = null;
+        if (btn) {
+            originalBtnHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.classList.add('applying');
+            btn.innerHTML = '<span class="btn-spinner-sm"></span> Applying...';
+        }
+
+        this.isApplyingChanges = true;
+        try {
+            const { trackChangesService } = await import('../services/trackChangesService.js');
+            const { TrackedChange } = await import('../models/changeModels.js');
+
+            const tracked = new TrackedChange(change);
+            tracked.validate();
+
+            await trackChangesService.enableTrackChanges();
+            const result = await trackChangesService.applyChangeAsTracked(tracked);
+
+            if (result && result.success) {
+                this.recordApplyResults({ applied: [changeId], failed: [] });
+                this.showNotification('Redline applied to the document.', 'success');
+            } else {
+                const reason = (result && result.error) || 'Unknown error';
+                this.recordApplyResults({ applied: [], failed: [{ changeId, reason }] });
+                this.showNotification(`This redline could not be applied automatically: ${reason}`, 'warning');
+            }
+        } catch (error) {
+            console.error(`[APP] Error applying single change ${changeId}:`, error);
+            this.recordApplyResults({ applied: [], failed: [{ changeId, reason: error.message || 'Unexpected error' }] });
+            this.showNotification(`This redline could not be applied: ${error.message || 'Unexpected error'}`, 'warning');
+        } finally {
+            this.isApplyingChanges = false;
+            // Reflect the finalized state in place (preserves expansion + scroll)
+            this.refreshResultsView();
+            if (btn && document.body.contains(btn) && originalBtnHtml !== null) {
+                // Card was not re-rendered (defensive) — restore button
+                btn.disabled = false;
+                btn.classList.remove('applying');
+                btn.innerHTML = originalBtnHtml;
+            }
+        }
+    },
+
+    /**
+     * Apply the currently selected (and still-actionable) redlines as a batch.
+     * Repeatable: only operates on non-finalized selected redlines, accumulates
+     * results, and leaves any remaining redlines applicable.
+     */
+    async applySelectedChanges() {
+        // Prevent concurrent apply operations
+        if (this.isApplyingChanges) return;
         
         if (!this.currentAnalysisResult || !this.currentAnalysisResult.changes) {
             this.showNotification('No changes to apply', 'error');
             return;
         }
         
-        // Check if any changes are selected
-        if (this.selectedChanges.size === 0) {
+        // Only apply changes that are selected AND not already finalized
+        const activeSelectedIds = this.getActiveSelectedIds();
+        if (activeSelectedIds.length === 0) {
             this.showNotification('Please select at least one change to apply', 'warning');
             return;
         }
@@ -2403,15 +2674,15 @@ window.app = {
             // Show progress screen
             this.showScreen('applying-changes');
             
-            // Filter to only selected changes and convert to TrackedChange objects
+            // Filter to selected + non-finalized changes and convert to TrackedChange objects
             const changes = this.currentAnalysisResult.changes
                 .filter((c, index) => {
                     const changeId = c.id || `change_${index + 1}`;
-                    return this.selectedChanges.has(changeId);
+                    return activeSelectedIds.includes(changeId);
                 })
                 .map(c => new TrackedChange(c));
             
-            console.log(`[APP] Applying ${changes.length} selected changes (out of ${this.currentAnalysisResult.changes.length} total)`);
+            console.log(`[APP] Applying ${changes.length} selected changes (${this.getRemainingCount()} remaining of ${this.currentAnalysisResult.changes.length} total)`);
             
             // Validate all changes
             console.log('[APP] Validating changes...');
@@ -2452,30 +2723,25 @@ window.app = {
                 }
             });
             
-            // Store results and mark all changes as applied
-            this.lastApplyResults = results;
-            this.allChangesApplied = true;
-            this.saveState();
-            
-            // Persist apply results to localStorage
-            localStorage.setItem('lastApplyResults', JSON.stringify({
-                applied: results.applied,
-                failed: results.failed,
-                total: results.total
-            }));
+            // Merge results into the cumulative per-redline state (does not lock the session)
+            this.recordApplyResults(results);
             
             console.log('[APP] Apply complete:', results.getSummary());
             
             // Navigate back to results-dashboard
             this.showScreen('results-dashboard');
             
-            // Show success notification
-            if (results.isFullSuccess()) {
-                this.showNotification(`All ${results.total} changes applied successfully!`, 'success');
-            } else if (results.applied.length > 0) {
-                this.showNotification(`Applied ${results.applied.length} of ${results.total} changes. ${results.failed.length} could not be applied automatically — see details below.`, 'warning');
+            // Show notification based on this batch's outcome
+            const appliedCount = (results.applied || []).length;
+            const failedCount = (results.failed || []).length;
+            const remaining = this.getRemainingCount();
+            if (failedCount === 0) {
+                const tail = remaining > 0 ? ` ${remaining} redline${remaining !== 1 ? 's' : ''} still available to apply.` : ' All redlines have now been applied.';
+                this.showNotification(`Applied ${appliedCount} redline${appliedCount !== 1 ? 's' : ''}.${tail}`, 'success');
+            } else if (appliedCount > 0) {
+                this.showNotification(`Applied ${appliedCount} redline${appliedCount !== 1 ? 's' : ''}. ${failedCount} could not be applied automatically — see details below.`, 'warning');
             } else {
-                this.showNotification(`No changes could be applied. Please check your document and try again.`, 'error');
+                this.showNotification(`No redlines could be applied. See details below.`, 'error');
             }
             
         } catch (error) {
