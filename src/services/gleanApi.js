@@ -250,7 +250,8 @@ export const gleanApi = {
             console.log('[CHAT AGENT] Sending message via Lambda');
             console.log('[CHAT AGENT] Config:', {
                 hasToken: !!config.apiToken,
-                hasChatId: !!chatSession.currentSessionId
+                hasChatId: !!chatSession.currentSessionId,
+                hasChatAgentId: !!config.chatAgentId
             });
             
             if (!config.apiToken) {
@@ -259,6 +260,10 @@ export const gleanApi = {
             
             if (!message) {
                 throw new Error('Message is required');
+            }
+
+            if (!config.chatAgentId) {
+                throw new Error('Chat Agent ID not configured. Check settings or admin defaults.');
             }
             
             try {
@@ -270,6 +275,7 @@ export const gleanApi = {
                     instance: settings.getInstance(),
                     message: message,
                     documentContent: documentContent || '',
+                    chatAgentId: config.chatAgentId,
                     chatId: chatSession.currentSessionId || null
                 };
 
@@ -301,15 +307,20 @@ export const gleanApi = {
                 if (result.chatId) {
                     chatSession.currentSessionId = result.chatId;
                 }
+
+                const reply = (result.message || '').trim();
+                if (!reply) {
+                    throw new Error('No assistant response returned from chat agent.');
+                }
                 
                 // Add messages to history
                 chatSession.addMessage('user', message);
-                chatSession.addMessage('assistant', result.message);
+                chatSession.addMessage('assistant', reply);
                 
                 console.log('[CHAT AGENT] Chat response received');
                 
                 return {
-                    reply: result.message,
+                    reply,
                     chatId: chatSession.currentSessionId
                 };
             } catch (error) {

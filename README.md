@@ -235,7 +235,7 @@ Cognito mode remains available for demos, POCs, and isolated testing:
 ```bash
 AUTH_MODE=cognito
 COGNITO_USER_EMAIL=admin@example.com
-COGNITO_USER_PASSWORD=ChangeMe123!@#
+COGNITO_USER_PASSWORD=<your-strong-password>
 ```
 
 In Cognito mode, users sign in with Cognito credentials and must provide a Glean API token in the add-in settings. The API token must have access to the required Glean capabilities, including agents and chat.

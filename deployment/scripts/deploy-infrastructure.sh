@@ -372,6 +372,48 @@ log_info "  2. Access add-in at: $WEBSITE_URL"
 echo ""
 
 if [ -n "$DOMAIN_NAME" ] && [ "$DOMAIN_NAME" != "$CF_DOMAIN" ]; then
-    log_warning "Don't forget to create DNS record:"
-    log_info "  $DOMAIN_NAME -> $CF_DOMAIN (CNAME)"
+    # Opt-in DNS management (set MANAGE_DNS=true in the env config). Prod manages
+    # its DNS manually, so this leaves prod untouched unless explicitly enabled.
+    if [ "${MANAGE_DNS:-false}" = "true" ] && [ -n "$CF_DOMAIN" ]; then
+        log_section "Upserting DNS Alias Record"
+        ZONE_ID=$(find_hosted_zone_id "$DOMAIN_NAME" "$AWS_PROFILE") || ZONE_ID=""
+        if [ -z "$ZONE_ID" ]; then
+            log_warning "No Route 53 hosted zone found for $DOMAIN_NAME — create the record manually:"
+            log_info "  $DOMAIN_NAME -> $CF_DOMAIN"
+        else
+            log_info "Hosted zone: $ZONE_ID"
+            # CloudFront's fixed alias hosted zone id (global)
+            CHANGE_BATCH=$(mktemp)
+            cat > "$CHANGE_BATCH" <<EOF
+{
+  "Comment": "Alias ${DOMAIN_NAME} to CloudFront",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "${DOMAIN_NAME}",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z2FDTNDATAQYW2",
+          "DNSName": "${CF_DOMAIN}",
+          "EvaluateTargetHealth": false
+        }
+      }
+    }
+  ]
+}
+EOF
+            aws route53 change-resource-record-sets \
+                --hosted-zone-id "$ZONE_ID" \
+                --change-batch "file://${CHANGE_BATCH}" \
+                --profile "$AWS_PROFILE" \
+                --query "ChangeInfo.Id" \
+                --output text
+            rm -f "$CHANGE_BATCH"
+            log_success "Alias record upserted: $DOMAIN_NAME -> $CF_DOMAIN"
+        fi
+    else
+        log_warning "Don't forget to create DNS record:"
+        log_info "  $DOMAIN_NAME -> $CF_DOMAIN (A-alias or CNAME)"
+    fi
 fi

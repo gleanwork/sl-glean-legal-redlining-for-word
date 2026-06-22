@@ -6,11 +6,11 @@
            xsi:type="TaskPaneApp">
   
   <!-- Basic Add-in Information -->
-  <Id>8a7f3c2e-5d4b-4e9a-b1c8-6f2d9e4a7b3c</Id>
+  <Id>{{ADDIN_ID}}</Id>
   <Version>1.1.0</Version>
   <ProviderName>Glean Technologies</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="Glean AI Redliner"/>
+  <DisplayName DefaultValue="{{ADDIN_DISPLAY_NAME}}"/>
   <Description DefaultValue="AI-powered contract review and analysis using Glean's intelligent agents. Review contracts with customizable playbooks, get AI recommendations, and chat with your documents."/>
   <IconUrl DefaultValue="https://{{DOMAIN_NAME}}/assets/GLN_logo-icon-Primary.png"/>
   <HighResolutionIconUrl DefaultValue="https://{{DOMAIN_NAME}}/assets/GLN_logo-icon-Primary.png"/>
@@ -87,7 +87,7 @@
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="GleanLegalGroupLabel" DefaultValue="Glean Legal"/>
-        <bt:String id="TaskpaneButtonLabel" DefaultValue="Glean AI Redliner"/>
+        <bt:String id="TaskpaneButtonLabel" DefaultValue="{{ADDIN_DISPLAY_NAME}}"/>
       </bt:ShortStrings>
       <bt:LongStrings>
         <bt:String id="TaskpaneButtonTooltip" DefaultValue="Open Glean Legal Contract Review to analyze and review contracts with AI assistance."/>

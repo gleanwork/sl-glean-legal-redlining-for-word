@@ -132,11 +132,18 @@ if [ ! -f "manifest.xml.example" ]; then
     log_error "Template file manifest.xml.example not found"
     exit 1
 fi
+# Add-in identity defaults to the prod values so existing deploys are unchanged
+# when MANIFEST_ID / ADDIN_DISPLAY_NAME are not set. Use a DISTINCT MANIFEST_ID
+# per environment to let multiple add-ins coexist in the same Word install.
+ADDIN_ID="${MANIFEST_ID:-8a7f3c2e-5d4b-4e9a-b1c8-6f2d9e4a7b3c}"
+ADDIN_NAME="${ADDIN_DISPLAY_NAME:-Glean AI Redliner}"
 sed -e "s|{{DOMAIN_NAME}}|$DOMAIN_NAME|g" \
     -e "s|{{API_GATEWAY_ID}}|$API_GATEWAY_ID|g" \
     -e "s|{{GLEAN_INSTANCE}}|${GLEAN_INSTANCE:?GLEAN_INSTANCE is required in prod.env}|g" \
+    -e "s|{{ADDIN_ID}}|$ADDIN_ID|g" \
+    -e "s|{{ADDIN_DISPLAY_NAME}}|$ADDIN_NAME|g" \
     manifest.xml.example > manifest.xml
-log_success "Generated manifest.xml"
+log_success "Generated manifest.xml (id: $ADDIN_ID, name: $ADDIN_NAME)"
 
 echo ""
 

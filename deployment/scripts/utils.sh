@@ -82,6 +82,30 @@ load_env_config() {
     done
 }
 
+# Find the Route 53 hosted zone id that owns a domain (walks up parent labels)
+find_hosted_zone_id() {
+    local domain=$1
+    local profile=$2
+    local candidate="$domain"
+    while [ -n "$candidate" ]; do
+        local zid
+        zid=$(aws route53 list-hosted-zones \
+            --profile "$profile" \
+            --query "HostedZones[?Name=='${candidate}.'].Id | [0]" \
+            --output text 2>/dev/null)
+        if [ -n "$zid" ] && [ "$zid" != "None" ]; then
+            echo "${zid##*/}"
+            return 0
+        fi
+        if [[ "$candidate" == *.* ]]; then
+            candidate="${candidate#*.}"
+        else
+            break
+        fi
+    done
+    return 1
+}
+
 # Get CloudFormation stack output
 get_stack_output() {
     local stack_name=$1
@@ -172,6 +196,7 @@ export -f log_section
 export -f check_aws_cli
 export -f check_aws_profile
 export -f load_env_config
+export -f find_hosted_zone_id
 export -f get_stack_output
 export -f stack_exists
 export -f wait_for_stack
