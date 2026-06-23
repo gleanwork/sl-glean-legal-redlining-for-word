@@ -33,7 +33,7 @@
   "homepage": "https://github.com/gleanwork/sl-glean-legal-redlining-for-word#readme",
   "dependencies": {},
   "devDependencies": {
-    "webpack": "^5.88.0",
+    "webpack": "^5.107.2",
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^4.15.1",
     "html-webpack-plugin": "^5.5.3",
